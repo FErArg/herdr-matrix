@@ -1,158 +1,158 @@
 # Herdr Matrix
 
-Plugin de Herdr que publica novedades de los agentes en salas Matrix cifradas y recibe órdenes desde el chat del dueño.
+Herdr plugin that publishes agent updates to encrypted Matrix rooms and receives commands from the owner's chat.
 
-Estado: versión 0.18.1. Ver `CHANGELOG.md` para lo verificado y lo pendiente, y `docs/` para el diseño de cada fase.
+Status: version 0.18.2. See `CHANGELOG.md` for what is verified and what is pending, and `docs/` for the design of each phase.
 
-Licencia: GNU GPL v3 (ver `LICENSE`).
+License: GNU GPL v3 (see `LICENSE`).
 
-## Requisitos
+## Requirements
 
-- Herdr 0.9.5 o superior, en Linux o macOS.
-- Node.js 22 o superior.
-- Un servidor Matrix (Synapse) con HTTPS. Un usuario para el bot y otro para el dueño.
+- Herdr 0.9.5 or later, on Linux or macOS.
+- Node.js 22 or later.
+- A Matrix server (Synapse) with HTTPS. One user for the bot and another for the owner.
 
-## Instalación
+## Installation
 
 ```
 npm ci --ignore-scripts
-herdr plugin link /ruta/a/herdr-matrix
+herdr plugin link /path/to/herdr-matrix
 ```
 
-`npm ci` instala las versiones fijadas de `package-lock.json`. `--ignore-scripts` evita scripts de terceros.
+`npm ci` installs the versions pinned in `package-lock.json`. `--ignore-scripts` prevents third-party scripts from running.
 
-Alternativa con script (macOS y Linux). Comprueba Node y Herdr, instala dependencias y enlaza el plugin. Reenlaza siempre, para que Herdr registre el manifiesto actual:
-
-```
-scripts/install.sh            # instala y enlaza
-scripts/install.sh --setup    # además lanza la configuración interactiva
-```
-
-Para desinstalar. Revoca la sesión en el servidor, desenlaza el plugin y conserva la configuración:
+Alternative with a script (macOS and Linux). It checks Node and Herdr, installs dependencies and links the plugin. It always relinks, so Herdr registers the current manifest:
 
 ```
-scripts/uninstall.sh          # conserva config.json
-scripts/uninstall.sh --purge  # además borra configuración y estado
+scripts/install.sh            # installs and links
+scripts/install.sh --setup    # also runs the interactive setup
 ```
 
-El bridge no se arranca desde los scripts. Si está en ejecución, `uninstall.sh` se niega a continuar. Avisa si quedan directorios de una versión anterior (`~/.config/herdr-matrix`, `~/.local/state/herdr-matrix`); puedes borrarlos a mano.
+To uninstall. It revokes the session on the server, unlinks the plugin and keeps the configuration:
 
-## Configuración
+```
+scripts/uninstall.sh          # keeps config.json
+scripts/uninstall.sh --purge  # also deletes configuration and state
+```
 
-`setup` se ejecuta desde una terminal dentro del directorio del plugin. La acción `setup` de Herdr no tiene terminal interactiva.
+The scripts do not start the bridge. If it is running, `uninstall.sh` refuses to continue. It warns if directories from a previous version remain (`~/.config/herdr-matrix`, `~/.local/state/herdr-matrix`); you can delete them by hand.
+
+## Configuration
+
+Run `setup` from a terminal inside the plugin directory. Herdr's `setup` action has no interactive terminal.
 
 ```
 node src/index.mjs setup
 ```
 
-Pide la URL del servidor, el usuario y la contraseña del bot (sin eco), y el MXID del dueño. Crea la sala de control cifrada e invita al dueño. El dispositivo del bot es nuevo en cada `setup`.
+It asks for the server URL, the bot's user and password (without echo), and the owner's MXID. It creates the encrypted control room and invites the owner. The bot device is new on every `setup`.
 
-Después, verifica el dispositivo del bot desde el cliente del dueño:
+Then verify the bot's device from the owner's client:
 
 ```
 node src/index.mjs verify
 ```
 
-El QR aparece en la consola. El dueño lo escanea desde Element (Verificar por escaneo). Con `verify` no debe correr el bridge.
+The QR code appears in the console. The owner scans it from Element (Verify by scanning). Do not run the bridge while running `verify`.
 
-## Uso
+## Usage
 
 ```
 node src/index.mjs run
 ```
 
-Corre el bridge hasta SIGINT o SIGTERM. Si se cierra la suscripción de Herdr o hay un fallo transitorio, reintenta con espera creciente (1 s, 2 s, 4 s… hasta 60 s). Después de 5 fallos seguidos sale con error. Una configuración inválida sale sin reintentar.
+Runs the bridge until SIGINT or SIGTERM. If Herdr's subscription closes or there is a transient failure, it retries with increasing waits (1 s, 2 s, 4 s… up to 60 s). After 5 consecutive failures it exits with an error. An invalid configuration exits without retrying.
 
-Al arrancar Herdr, el `[[startup]]` del manifiesto ejecuta `node src/index.mjs startup`. Ese comando lanza el bridge en segundo plano y termina. Su salida va a `state/bridge.log`. Sin configuración, o con el bridge ya en ejecución, no hace nada.
+When Herdr starts, the manifest's `[[startup]]` runs `node src/index.mjs startup`. That command starts the bridge in the background and exits. Its output goes to `state/bridge.log`. Without a configuration, or with the bridge already running, it does nothing.
 
-Cada workspace de Herdr tiene su sala cifrada. Se crea al aparecer, se renombra al cambiar de nombre y se archiva (solo lectura) al cerrarse.
+Each Herdr workspace has its own encrypted room. It is created when the workspace appears, renamed when the workspace is renamed, and archived (read-only) when it closes.
 
-**Antes de usar el chat, el proyecto debe estar iniciado.** El chat responde a través del agente de su propio workspace (Claude Code u opencode). Abre el agente en el panel del workspace antes de escribir en su sala. Con opencode, sin agente abierto el chat no se abre. Con Claude Code, ver la sección siguiente.
+**Before using the chat, the project must be started.** The chat answers only through the agent of its own workspace (Claude Code or opencode). Open the agent in the workspace's pane before writing in its room. With opencode, the chat does not open without an open agent. For Claude Code, see the next section.
 
-Reglas del chat:
+Chat rules:
 
-- Un workspace tiene un agente. Si hay más de uno, el chat no se abre.
-- Los mensajes de una sala solo llegan al agente de su workspace. Ningún agente de otro workspace responde en esa sala.
-- opencode se ejecuta en el directorio del workspace, no en el del bridge.
+- A workspace has one agent. If there is more than one, the chat does not open.
+- Messages from a room reach only the agent of its workspace. No agent from another workspace answers in that room.
+- opencode runs in the workspace's directory, not the bridge's directory.
 
-### Chat con Claude Code
+### Chat with Claude Code
 
-Escribe `chat claude` en la sala del workspace y confirma con `confirmar`. El bridge:
+Write `chat claude` in the workspace's room and confirm with `confirmar`. The bridge:
 
-1. Busca el agente del workspace. Si hay uno, usa su panel. Si no hay ninguno, arranca Claude Code en el panel principal del workspace (`w1:p1`) y espera hasta 90 s a que esté listo.
-2. Pide al agente que responda en texto plano y breve, apto para el chat.
-3. Cada mensaje de la sala se escribe en el panel con `agent.prompt` y el bridge espera a que el agente vuelva a estar inactivo (hasta 15 min). La respuesta se lee de la transcripción de Claude Code y se publica en la sala, en trozos de 3500 caracteres como máximo.
+1. Looks for the workspace's agent. If there is one, it uses its pane. If there is none, it starts Claude Code in the workspace's main pane (`w1:p1`) and waits up to 90 s for it to be ready.
+2. Asks the agent to reply in plain, brief text suitable for chat.
+3. Writes each room message into the pane with `agent.prompt`, and the bridge waits until the agent is idle again (up to 15 min). The reply is read from the Claude Code transcript and posted to the room, in chunks of at most 3500 characters.
 
-Mientras el agente trabaja, los mensajes siguen su orden. Escribe `salir` para cerrar la sesión.
+While the agent is working, messages keep their order. Write `salir` to close the session.
 
-### Chat con opencode
+### Chat with opencode
 
-Escribe `chat opencode` en la sala del workspace y confirma con `confirmar`. El bridge:
+Write `chat opencode` in the workspace's room and confirm with `confirmar`. The bridge:
 
-1. Busca el agente del workspace. Debe ser opencode y tener un directorio de proyecto. Si no lo encuentra, no abre la sesión.
-2. Cada mensaje de la sala ejecuta `opencode run` en el directorio del proyecto del workspace, con `--auto` (aprueba los permisos sin preguntar) y en la misma sesión de opencode que el mensaje anterior. La primera vez crea la sesión.
-3. La respuesta se lee de la base de datos de opencode (`~/.local/share/opencode/opencode.db`) y se publica en la sala. Si `opencode run` no termina en 3 min, el bridge avisa en la sala.
+1. Looks for the workspace's agent. It must be opencode and have a project directory. If it cannot find one, it does not open the session.
+2. Each room message runs `opencode run` in the workspace's project directory, with `--auto` (approves permissions without asking) and in the same opencode session as the previous message. The first message creates the session.
+3. The reply is read from opencode's database (`~/.local/share/opencode/opencode.db`) and posted to the room. If `opencode run` does not finish within 3 min, the bridge reports it in the room.
 
-Con opencode, el panel del TUI y el chat no se coordinan: si el TUI está ocupado con otra tarea, el mensaje espera o falla por tiempo. Un workspace con dos agentes no abre el chat.
+With opencode, the TUI pane and the chat do not coordinate: if the TUI is busy with another task, the message waits or fails on timeout. A workspace with two agents does not open the chat.
 
-### Reinicio del bridge
+### Bridge restart
 
-Si el bridge se reinicia con una sesión de chat abierta, la sesión se conserva en `chats.json`. Los mensajes que quedaron sin enviar no salen solos: el bridge avisa en la sala y espera `confirmar` (enviarlos) o `descartar` (borrarlos).
+If the bridge restarts with a chat session open, the session is kept in `chats.json`. Messages that were not sent do not go out on their own: the bridge reports it in the room and waits for `confirmar` (send them) or `descartar` (discard them).
 
-## Órdenes
+## Commands
 
-Se envían desde una sala. Solo el dueño puede enviarlas.
+They are sent from a room. Only the owner can send them.
 
-| Orden | Dónde | Qué hace |
+| Command | Where | What it does |
 |---|---|---|
-| `estado` | Sala de control o de un espacio | Lista los agentes del alcance |
-| `leer <panel>` | Sala de control o del espacio del panel | Últimas 20 líneas del panel |
-| `enviar <panel> <texto>` | Solo sala del espacio del panel | Escribe texto en el panel, tras confirmar |
-| `enter <panel>` | Solo sala del espacio del panel | Pulsa Enter en el panel, tras confirmar |
-| `chat <claude\|opencode>` | Solo sala de un workspace | Abre una sesión de chat con el agente del workspace, tras confirmar |
-| `salir` | Sala con sesión de chat abierta | Cierra la sesión de chat |
-| `confirmar` | Misma sala que la orden | Ejecuta la orden pendiente (60 s) |
-| `descartar` | Sala con mensajes de chat pendientes | Borra los mensajes en cola tras reiniciar el bridge |
+| `estado` | Control room or a workspace room | Lists the agents in scope |
+| `leer <panel>` | Control room or the room of the pane's workspace | Last 20 lines of the pane |
+| `enviar <panel> <texto>` | Only the room of the pane's workspace | Types text into the pane, after confirmation |
+| `enter <panel>` | Only the room of the pane's workspace | Presses Enter in the pane, after confirmation |
+| `chat <claude\|opencode>` | Only a workspace room | Opens a chat session with the workspace's agent, after confirmation |
+| `salir` | Room with an open chat session | Closes the chat session |
+| `confirmar` | Same room as the command | Runs the pending command (60 s) |
+| `descartar` | Room with pending chat messages | Deletes queued messages after a bridge restart |
 
-Los paneles tienen el formato `w1:p1`. Un mensaje de otro tipo, o un verbo que no está en la lista, no ejecuta nada. Cualquier mensaje distinto de `confirmar` cancela una orden pendiente.
+Panels use the format `w1:p1`. A message of any other type, or a verb not in the list, does nothing. Any message other than `confirmar` cancels a pending command.
 
-Con una sesión de chat abierta, todo lo que escribes en esa sala va al agente, salvo `salir`. Si el bridge se reinicia con mensajes en cola, no los envía hasta que respondas `confirmar` (enviarlos) o `descartar` (borrarlos).
+While a chat session is open, everything you write in that room goes to the agent, except `salir`. If the bridge restarts with queued messages, they are not sent until you reply `confirmar` (send them) or `descartar` (discard them).
 
-## Archivos
+## Files
 
-Herdr arranca el plugin con sus propios directorios, y `setup`, `verify` y `run` usan los mismos. Por eso `install.sh` y `uninstall.sh` los exportan antes de actuar. Si ejecutas `node src/index.mjs` a mano, exporta `HERDR_PLUGIN_CONFIG_DIR` y `HERDR_PLUGIN_STATE_DIR` con esos mismos valores (los muestra `install.sh`). Si no están definidos, se usan `~/.config/herdr-matrix` y `~/.local/state/herdr-matrix`.
+Herdr starts the plugin with its own directories, and `setup`, `verify` and `run` use the same ones. That is why `install.sh` and `uninstall.sh` export them before acting. If you run `node src/index.mjs` by hand, export `HERDR_PLUGIN_CONFIG_DIR` and `HERDR_PLUGIN_STATE_DIR` with the same values (`install.sh` prints them). If they are not set, `~/.config/herdr-matrix` and `~/.local/state/herdr-matrix` are used.
 
-Directorio de configuración (`HERDR_PLUGIN_CONFIG_DIR`, normalmente `~/.config/herdr/plugins/config/herdr-matrix`):
+Configuration directory (`HERDR_PLUGIN_CONFIG_DIR`, usually `~/.config/herdr/plugins/config/herdr-matrix`):
 
-- `config.json`: URL, dueño, sala de control, salas por workspace. Sin secretos.
+- `config.json`: URL, owner, control room, rooms per workspace. No secrets.
 
-Directorio de estado (`HERDR_PLUGIN_STATE_DIR`, normalmente `~/.local/state/herdr/plugins/herdr-matrix`), todo con permisos 0600:
+State directory (`HERDR_PLUGIN_STATE_DIR`, usually `~/.local/state/herdr/plugins/herdr-matrix`), all with 0600 permissions:
 
-- `session.json`: token de acceso y dispositivo del bot.
-- `crypto/store.bin` y `crypto/store.key`: almacén criptográfico, cifrado con la clave del lado.
-- `herdr-snapshot.json`: último estado de los agentes.
-- `chats.json`: sesiones de chat abiertas, por sala.
-- `audit.log`: una línea por orden. El texto de `enviar` no se registra.
-- `bridge.log`: salida del bridge cuando lo arrancó Herdr.
-- `bridge.lock`: bloqueo de instancia única.
+- `session.json`: access token and the bot's device.
+- `crypto/store.bin` and `crypto/store.key`: cryptographic store, encrypted with the side key.
+- `herdr-snapshot.json`: latest state of the agents.
+- `chats.json`: open chat sessions, per room.
+- `audit.log`: one line per command. The text of `enviar` is not logged.
+- `bridge.log`: bridge output when Herdr started it.
+- `bridge.lock`: single-instance lock.
 
-## Riesgos conocidos
+## Known risks
 
-- **Clave junto al almacén.** `store.key` está en el mismo directorio que `store.bin`. Quien lea ese directorio puede descifrarlo.
-- **`leer` muestra salida de paneles en la sala.** Si un panel muestra un secreto, aparece en Matrix. Usa `leer` solo en paneles que puedan mostrarse.
-- **Metadatos en el servidor.** El servidor no lee el contenido cifrado, pero ve quién escribe, cuándo y en qué sala.
-- **Sin prueba en vivo de una orden remota completa.** Ver `docs/13-fase3-entrada.md`.
+- **Key next to the store.** `store.key` is in the same directory as `store.bin`. Anyone who can read that directory can decrypt it.
+- **`leer` shows pane output in the room.** If a pane shows a secret, it appears in Matrix. Use `leer` only on panes that can be shown.
+- **Metadata on the server.** The server cannot read the encrypted content, but it sees who writes, when, and in which room.
+- **No live test of a complete remote command.** See `docs/13-fase3-entrada.md`.
 
-## Rotación
+## Rotation
 
-- **Contraseña del bot:** cámbiala en el servidor, luego ejecuta `node src/index.mjs setup --logout` y `setup` de nuevo. Esto crea un dispositivo nuevo.
-- **Sesión:** `node src/index.mjs setup --logout` revoca el token y borra `session.json` y el almacén criptográfico. La configuración se conserva.
-- **Dispositivo comprometido:** `setup --logout` y después `setup`. El dispositivo anterior queda revocado en el servidor.
+- **Bot password:** change it on the server, then run `node src/index.mjs setup --logout` and `setup` again. This creates a new device.
+- **Session:** `node src/index.mjs setup --logout` revokes the token and deletes `session.json` and the cryptographic store. The configuration is kept.
+- **Compromised device:** `setup --logout` and then `setup`. The previous device is revoked on the server.
 
-## Pruebas
+## Tests
 
 ```
 npm test
 ```
 
-Las pruebas usan servidores y clientes simulados. No necesitan Herdr ni Synapse.
+The tests use simulated servers and clients. They do not need Herdr or Synapse.
