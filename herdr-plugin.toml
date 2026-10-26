@@ -1,0 +1,15 @@
+id = "herdr-matrix"
+name = "Herdr Matrix"
+version = "0.18.2"
+min_herdr_version = "0.9.5"
+description = "Publica novedades de agentes en salas Matrix cifradas y recibe órdenes desde el chat"
+platforms = ["linux", "macos"]
+
+[[startup]]
+command = ["node", "src/index.mjs", "startup"]
+
+[[actions]]
+id = "setup"
+title = "Configurar Matrix"
+contexts = ["global"]
+command = ["node", "src/index.mjs", "setup"]

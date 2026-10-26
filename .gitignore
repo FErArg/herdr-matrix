@@ -1,0 +1,7 @@
+# Credenciales locales (no versionar)
+.env
+.env.*
+node_modules/
+
+# Instalables generados (bin/<versión>/); no se versionan
+bin/

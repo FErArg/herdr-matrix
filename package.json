@@ -1,0 +1,20 @@
+{
+  "name": "herdr-matrix",
+  "version": "0.18.2",
+  "private": true,
+  "description": "Plugin de Herdr que conecta paneles de agentes con salas Matrix cifradas",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  },
+  "license": "GPL-3.0-only",
+  "dependencies": {
+    "@matrix-org/matrix-sdk-crypto-wasm": "18.9.0",
+    "fake-indexeddb": "6.2.2",
+    "matrix-js-sdk": "43.0.0",
+    "qrcode-generator": "2.0.4"
+  }
+}
