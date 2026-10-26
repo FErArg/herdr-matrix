@@ -2,7 +2,7 @@
 
 Plugin de Herdr que publica novedades de los agentes en salas Matrix cifradas y recibe órdenes desde el chat del dueño.
 
-Estado: versión 0.16.0. Ver `CHANGELOG.md` para lo verificado y lo pendiente, y `docs/` para el diseño de cada fase.
+Estado: versión 0.18.1. Ver `CHANGELOG.md` para lo verificado y lo pendiente, y `docs/` para el diseño de cada fase.
 
 Licencia: GNU GPL v3 (ver `LICENSE`).
 
@@ -16,12 +16,12 @@ Licencia: GNU GPL v3 (ver `LICENSE`).
 
 ```
 npm ci --ignore-scripts
-herdr plugin link /ruta/a/hm-plugin-base
+herdr plugin link /ruta/a/herdr-matrix
 ```
 
 `npm ci` instala las versiones fijadas de `package-lock.json`. `--ignore-scripts` evita scripts de terceros.
 
-Alternativa con script (macOS y Linux). Comprueba Node, Herdr e instala dependencias y enlaza el plugin:
+Alternativa con script (macOS y Linux). Comprueba Node y Herdr, instala dependencias y enlaza el plugin. Reenlaza siempre, para que Herdr registre el manifiesto actual:
 
 ```
 scripts/install.sh            # instala y enlaza
@@ -35,7 +35,7 @@ scripts/uninstall.sh          # conserva config.json
 scripts/uninstall.sh --purge  # además borra configuración y estado
 ```
 
-El bridge no se arranca desde los scripts. Si está en ejecución, `uninstall.sh` se niega a continuar.
+El bridge no se arranca desde los scripts. Si está en ejecución, `uninstall.sh` se niega a continuar. Avisa si quedan directorios de una versión anterior (`~/.config/herdr-matrix`, `~/.local/state/herdr-matrix`); puedes borrarlos a mano.
 
 ## Configuración
 
@@ -67,13 +67,37 @@ Al arrancar Herdr, el `[[startup]]` del manifiesto ejecuta `node src/index.mjs s
 
 Cada workspace de Herdr tiene su sala cifrada. Se crea al aparecer, se renombra al cambiar de nombre y se archiva (solo lectura) al cerrarse.
 
-**Antes de usar el chat, el proyecto debe estar iniciado.** El chat solo responde a través del agente de su propio workspace (Claude Code u opencode). Si el workspace no tiene un agente abierto en su panel, el chat no se abre o no responde. Abre el agente en el workspace antes de escribir en su sala.
+**Antes de usar el chat, el proyecto debe estar iniciado.** El chat responde a través del agente de su propio workspace (Claude Code u opencode). Abre el agente en el panel del workspace antes de escribir en su sala. Con opencode, sin agente abierto el chat no se abre. Con Claude Code, ver la sección siguiente.
 
 Reglas del chat:
 
 - Un workspace tiene un agente. Si hay más de uno, el chat no se abre.
 - Los mensajes de una sala solo llegan al agente de su workspace. Ningún agente de otro workspace responde en esa sala.
 - opencode se ejecuta en el directorio del workspace, no en el del bridge.
+
+### Chat con Claude Code
+
+Escribe `chat claude` en la sala del workspace y confirma con `confirmar`. El bridge:
+
+1. Busca el agente del workspace. Si hay uno, usa su panel. Si no hay ninguno, arranca Claude Code en el panel principal del workspace (`w1:p1`) y espera hasta 90 s a que esté listo.
+2. Pide al agente que responda en texto plano y breve, apto para el chat.
+3. Cada mensaje de la sala se escribe en el panel con `agent.prompt` y el bridge espera a que el agente vuelva a estar inactivo (hasta 15 min). La respuesta se lee de la transcripción de Claude Code y se publica en la sala, en trozos de 3500 caracteres como máximo.
+
+Mientras el agente trabaja, los mensajes siguen su orden. Escribe `salir` para cerrar la sesión.
+
+### Chat con opencode
+
+Escribe `chat opencode` en la sala del workspace y confirma con `confirmar`. El bridge:
+
+1. Busca el agente del workspace. Debe ser opencode y tener un directorio de proyecto. Si no lo encuentra, no abre la sesión.
+2. Cada mensaje de la sala ejecuta `opencode run` en el directorio del proyecto del workspace, con `--auto` (aprueba los permisos sin preguntar) y en la misma sesión de opencode que el mensaje anterior. La primera vez crea la sesión.
+3. La respuesta se lee de la base de datos de opencode (`~/.local/share/opencode/opencode.db`) y se publica en la sala. Si `opencode run` no termina en 3 min, el bridge avisa en la sala.
+
+Con opencode, el panel del TUI y el chat no se coordinan: si el TUI está ocupado con otra tarea, el mensaje espera o falla por tiempo. Un workspace con dos agentes no abre el chat.
+
+### Reinicio del bridge
+
+Si el bridge se reinicia con una sesión de chat abierta, la sesión se conserva en `chats.json`. Los mensajes que quedaron sin enviar no salen solos: el bridge avisa en la sala y espera `confirmar` (enviarlos) o `descartar` (borrarlos).
 
 ## Órdenes
 
@@ -85,22 +109,31 @@ Se envían desde una sala. Solo el dueño puede enviarlas.
 | `leer <panel>` | Sala de control o del espacio del panel | Últimas 20 líneas del panel |
 | `enviar <panel> <texto>` | Solo sala del espacio del panel | Escribe texto en el panel, tras confirmar |
 | `enter <panel>` | Solo sala del espacio del panel | Pulsa Enter en el panel, tras confirmar |
+| `chat <claude\|opencode>` | Solo sala de un workspace | Abre una sesión de chat con el agente del workspace, tras confirmar |
+| `salir` | Sala con sesión de chat abierta | Cierra la sesión de chat |
 | `confirmar` | Misma sala que la orden | Ejecuta la orden pendiente (60 s) |
+| `descartar` | Sala con mensajes de chat pendientes | Borra los mensajes en cola tras reiniciar el bridge |
 
 Los paneles tienen el formato `w1:p1`. Un mensaje de otro tipo, o un verbo que no está en la lista, no ejecuta nada. Cualquier mensaje distinto de `confirmar` cancela una orden pendiente.
 
+Con una sesión de chat abierta, todo lo que escribes en esa sala va al agente, salvo `salir`. Si el bridge se reinicia con mensajes en cola, no los envía hasta que respondas `confirmar` (enviarlos) o `descartar` (borrarlos).
+
 ## Archivos
 
-Directorio de configuración (`HERDR_PLUGIN_CONFIG_DIR` o `~/.config/herdr-matrix`):
+Herdr arranca el plugin con sus propios directorios, y `setup`, `verify` y `run` usan los mismos. Por eso `install.sh` y `uninstall.sh` los exportan antes de actuar. Si ejecutas `node src/index.mjs` a mano, exporta `HERDR_PLUGIN_CONFIG_DIR` y `HERDR_PLUGIN_STATE_DIR` con esos mismos valores (los muestra `install.sh`). Si no están definidos, se usan `~/.config/herdr-matrix` y `~/.local/state/herdr-matrix`.
+
+Directorio de configuración (`HERDR_PLUGIN_CONFIG_DIR`, normalmente `~/.config/herdr/plugins/config/herdr-matrix`):
 
 - `config.json`: URL, dueño, sala de control, salas por workspace. Sin secretos.
 
-Directorio de estado (`HERDR_PLUGIN_STATE_DIR` o `~/.local/state/herdr-matrix`), todo con permisos 0600:
+Directorio de estado (`HERDR_PLUGIN_STATE_DIR`, normalmente `~/.local/state/herdr/plugins/herdr-matrix`), todo con permisos 0600:
 
 - `session.json`: token de acceso y dispositivo del bot.
 - `crypto/store.bin` y `crypto/store.key`: almacén criptográfico, cifrado con la clave del lado.
 - `herdr-snapshot.json`: último estado de los agentes.
+- `chats.json`: sesiones de chat abiertas, por sala.
 - `audit.log`: una línea por orden. El texto de `enviar` no se registra.
+- `bridge.log`: salida del bridge cuando lo arrancó Herdr.
 - `bridge.lock`: bloqueo de instancia única.
 
 ## Riesgos conocidos
