@@ -7,16 +7,20 @@ import { acquireLock } from "./lock.mjs";
 import { startBotClient } from "./bot-client.mjs";
 import { assertSafeSocket, createHerdrClient, defaultSocketPath } from "./herdr.mjs";
 import { createAudit } from "./audit.mjs";
+import { createCards } from "./cards.mjs";
 import { createChatManager } from "./chat.mjs";
 import { createInbound } from "./inbound.mjs";
 import { createInviteQueue } from "./invites.mjs";
 import { attachInbound } from "./inbound-events.mjs";
 import { createMatrixClient } from "./matrix.mjs";
 import { createOutbound, SUBSCRIPTION_TYPES } from "./outbound.mjs";
+import { createRotator } from "./rotate.mjs";
 import { createRoomManager } from "./rooms.mjs";
 import { createRoomSender } from "./sender.mjs";
 import { loadConfig, readJson, writeJsonSecure } from "./store.mjs";
 import { assertConfigValid } from "./config-check.mjs";
+
+const ROTATION_CHECK_MS = 60_000;
 
 function fatal(message) {
   return Object.assign(new Error(message), { fatal: true });
@@ -40,6 +44,7 @@ export async function runBridge({ dirs, log, socketPath = defaultSocketPath() })
   let detachInbound = null;
   let sender = null;
   let failure = null;
+  let rotationTimer = null;
   const onSignal = () => stopRequested();
   let stopRequested;
   const stopped = new Promise((resolve) => {
@@ -114,10 +119,21 @@ export async function runBridge({ dirs, log, socketPath = defaultSocketPath() })
       log,
       onCreated: (created) => invites.enqueue(created),
     });
+    // Tarjetas de tarea. Las que quedaron abiertas antes de reiniciar se cierran como interrumpidas.
+    const cardsPath = join(dirs.state, "cards.json");
+    const cards = createCards({
+      sender,
+      persist: (items) => writeJsonSecure(cardsPath, items),
+      restore: (await readJson(cardsPath)) ?? [],
+      log,
+    });
+    await cards.recoverInterrupted();
     outbound = createOutbound({
       herdr,
       sender,
       rooms,
+      chats,
+      cards,
       config,
       snapshot,
       saveSnapshot: (data) => writeJsonSecure(snapshotPath, data),
@@ -141,11 +157,28 @@ export async function runBridge({ dirs, log, socketPath = defaultSocketPath() })
     process.once("SIGTERM", onSignal);
     await outbound.start();
     log("bridge activo; esperando eventos de Herdr");
+    // Rotación de registros: al superar 10 MB o al cambiar el día (ver src/rotate.mjs).
+    const rotators = [
+      createRotator({ path: join(dirs.state, "bridge.log"), mode: "copy" }),
+      createRotator({ path: join(dirs.state, "audit.log"), mode: "rename" }),
+    ];
+    const rotate = async () => {
+      for (const rotator of rotators) {
+        try {
+          await rotator.check();
+        } catch (error) {
+          log(`rotación de registros fallida: ${error.message}`);
+        }
+      }
+    };
+    await rotate();
+    rotationTimer = setInterval(rotate, ROTATION_CHECK_MS);
     await stopped;
     if (failure) throw failure;
   } finally {
     process.off("SIGINT", onSignal);
     process.off("SIGTERM", onSignal);
+    clearInterval(rotationTimer);
     outbound?.stop();
     detachInbound?.();
     subscription?.close();

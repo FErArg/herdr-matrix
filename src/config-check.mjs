@@ -7,7 +7,8 @@ import { KIND_TEXT } from "./notifier.mjs";
 
 // Matrix v3+: el ID de sala es opaco y no lleva sufijo de servidor.
 const ROOM_ID = /^![\w.~+/=-]{1,255}$/;
-const WORKSPACE_ID = /^w\d+$/;
+// Herdr numera los workspaces como w1, w2… y, al pasar de nueve, también con letras: wA, wB.
+const WORKSPACE_ID = /^w[0-9A-Za-z]{1,16}$/;
 const ROOM_STATUS = ["active", "archived"];
 
 // Devuelve la lista de problemas. Lista vacía = configuración válida.

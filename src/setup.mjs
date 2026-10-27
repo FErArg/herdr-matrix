@@ -91,7 +91,7 @@ export async function runSetup({ io, fetchImpl, dirs }) {
     allowed_panes: existing?.allowed_panes ?? {},
   });
   io.log("Configuración guardada.");
-  io.log("Pendiente: dispositivo E2EE del bot (ver plans/06-plan.md, Fase 0, punto 5).");
+  io.log("Pendiente: dispositivo E2EE del bot.");
 }
 
 export async function runLogout({ io, fetchImpl, dirs }) {

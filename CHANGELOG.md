@@ -1,10 +1,129 @@
 # Changelog
 
-Formato: versión, fecha y hash del commit que contiene el cambio. Versionado semántico. Mientras no exista código de aplicación, las versiones `0.x` solo documentan análisis y planes.
+Formato: versión y fecha. Versionado semántico.
+
+## 0.24.1 — 2026-10-27
+
+### Cambiado
+
+- Se elimina el lector de la base de datos de opencode (`opencodeDbPath`, `opencodeReplyAfter`, `readOpencodeReply` de `src/transcript.mjs`). Ningún flujo lo usa: el chat, la tarjeta y `detalle` leen la API.
+
+## 0.24.0 — 2026-10-27
+
+### Añadido
+
+- Con `chat.opencode_auto` desactivado, la sala muestra cada permiso que pide opencode. El dueño responde `permitir` (una vez) o `rechazar`. Nunca se guarda una aprobación: `always` no se ofrece desde la sala.
+- `cancelar` con opencode interrumpe el turno por la API (`interruptOpencode`), en lugar de enviar Escape al panel.
+
+## 0.23.0 — 2026-10-27
+
+### Cambiado
+
+- La tarjeta y `detalle` de opencode leen el turno desde la API del servicio de fondo (`src/opencode-api.mjs`), no desde la base de datos de opencode. `cambios` lista los ficheros escritos con la herramienta `write`; `problemas`, las herramientas con error.
+- Se eliminan `opencodeTurn` y `readOpencodeTurn` de `src/transcript.mjs`.
+
+## 0.22.1 — 2026-10-27
+
+### Añadido
+
+- Con la sesión en pausa, cada mensaje responde que está en pausa y cómo continuar (`confirmar` o `salir`).
+
+### Cambiado
+
+- opencode: la sesión del chat es la que muestra el panel del workspace (`agent_session` de Herdr), no una nueva. Así el mensaje aparece en la TUI. Se toma al abrir el chat y en cada envío.
+
+## 0.22.0 — 2026-10-27
+
+### Añadido
+
+- Transporte de opencode por la API del servicio de fondo (`opencode api`). Sustituye a `opencode run`. La sesión de chat y la TUI comparten la misma sesión de opencode.
+- Comprobación del tipo de agente antes de cada envío: si el agente del panel de un workspace cambia (por ejemplo de Claude Code a opencode), el mensaje no se envía, la sesión queda en pausa y la sala lo avisa. La cola se conserva.
+
+### Cambiado
+
+- `open` de un tipo distinto al de la sesión olvida el ID de sesión y el directorio anteriores.
+- Un fallo al leer la respuesta después de enviar el mensaje se registra y se avisa como respuesta no leída, no como envío fallido.
+- `open("claude")` rechaza un panel con opencode.
+
+## 0.21.4 — 2026-10-27
+
+### Añadido
+
+- Rotación de registros: `audit.log` y `bridge.log` se archivan al superar 10 MB o al cambiar el día, con compresión gzip. Revisión cada 60 s.
+
+### Cambiado
+
+- `chat` con una sesión ya abierta en la sala responde que la sesión está abierta y no se envía al agente.
+
+## 0.21.3 — 2026-10-27
+
+### Cambiado
+
+- Sin cambios de código: reorganización de la documentación interna de planes.
+
+## 0.21.2 — 2026-10-27
+
+### Corregido
+
+- Sesiones de chat que se cerraban solas: con un agente ya abierto pero ocupado, la sesión fallaba tras 90 s de espera y había que volver a escribir `chat`. Ahora la sesión se abre sin esperar: la instrucción de formato va al principio de la cola y se envía cuando el agente esté libre. La espera de listo solo se aplica a un agente que el bridge arranca.
+
+## 0.21.1 — 2026-10-27
+
+### Corregido
+
+- Tarjeta de tarea: el pedido mostraba las etiquetas internas de Claude Code cuando el turno empezaba con una orden con barra. Ahora usa el nombre del comando y sus argumentos.
+
+## 0.21.0 — 2026-10-27
+
+### Añadido
+
+- Consultas de la tarjeta de tarea, solo con sesión de chat abierta en la sala:
+  - `detalle [n]`: últimas n acciones de herramienta del turno (por defecto 10, máximo 30).
+  - `ver`: respuesta completa del turno, troceada.
+  - `cambios`: ficheros sin confirmar y resumen de diff del proyecto.
+  - `cancelar`: envía Escape al panel de la sesión, previa confirmación con `confirmar`.
+- `src/consultas.mjs`: análisis de la orden, formato de las respuestas y consulta a git.
+
+### Cambiado
+
+- Con sesión de chat abierta, las consultas y la confirmación de `cancelar` se atienden antes de enrutar el mensaje al agente. Cualquier otro mensaje cancela la orden pendiente.
+
+## 0.20.0 — 2026-10-27
+
+### Añadido
+
+- Tarjeta de tarea en la sala del workspace: se abre al empezar a trabajar un panel con sesión de chat abierta, muestra la decisión pendiente y se cierra con el resultado (pedido, estado, respuesta, cambios y problemas). Se edita el mismo mensaje (`m.replace`).
+- Persistencia de tarjetas en `cards.json`, con reintento de edición y cierre `interrumpida` tras reiniciar el bridge.
+- `src/transcript.mjs`: lectura del turno completo (pedido, respuesta, ficheros editados y errores), para Claude Code y opencode.
+
+### Cambiado
+
+- El resumen al terminar de 0.19.0 se retira; la tarjeta lo sustituye.
+
+### Seguridad
+
+- El `session_id` que llega de Herdr se valida antes de construir la ruta de la transcripción.
+- Redacción de secretos en pedido, respuesta, ficheros, errores y líneas del panel.
+- Las tarjetas solo se editan en la sala donde se abrieron, y solo mensajes enviados por el bridge.
+
+## 0.19.1 — 2026-10-27
+
+### Cambiado
+
+- Sin cambios de código: reorganización de la documentación interna de planes.
+
+## 0.19.0 — 2026-10-27
+
+### Añadido
+
+- Resumen al terminar: si un workspace con sesión de chat abierta pasa a `done`, el bridge publica en su sala el último texto del agente. Sin sesión de chat no se publica nada. (Lo sustituye la tarjeta de 0.20.0.)
+- Lectores del último turno para Claude Code y opencode.
+
+### Corregido
+
+- Los IDs de workspace de Herdr con letras (`wA`, `wB`) se rechazaban y el bridge no arrancaba tras reiniciarse. La regla ahora acepta `w` seguido de caracteres alfanuméricos.
 
 ## 0.18.2 — 2026-10-26
-
-Commit: `e25ee9b758e60550702baab846a616c80fe863e5`
 
 ### Añadido
 
@@ -18,8 +137,6 @@ Commit: `e25ee9b758e60550702baab846a616c80fe863e5`
 - README traducido al inglés. Versión e información de directorios actualizadas a las rutas de Herdr.
 
 ## 0.18.1 — 2026-10-26
-
-Commit: `8e4b7a58f10e7f98ff33339a9a61f171a0209b38`
 
 ### Corregido
 
@@ -44,8 +161,6 @@ Commit: `8e4b7a58f10e7f98ff33339a9a61f171a0209b38`
 
 ## 0.18.0 — 2026-10-26
 
-Commit: `1063a111245950a198ae988488de979ac7ff1f27`
-
 ### Añadido
 
 - Aviso «terminó» cuando un agente pasa de `working` a `idle`. Herdr no siempre marca `done` (p. ej. opencode), así que `kindOf` en `src/notifier.mjs` lo trata como `done`. Usa el mismo `notify_events` y el mismo límite de 10 s por panel.
@@ -63,14 +178,12 @@ Commit: `1063a111245950a198ae988488de979ac7ff1f27`
 
 ### Pendiente
 
-- Confirmar en vivo el aviso de `opencode` en `01-pruebas` al terminar una tarea.
+- Confirmar en vivo el aviso de `opencode` en `<workspace>` al terminar una tarea.
 - Revisar si el ruido de las salas de Claude Code es aceptable.
-- Un mensaje llegado a la sala `herdr-matrix` tras escribir en `01-pruebas` no tiene evidencia de error de enrutado (la auditoría no muestra órdenes de esa sala). Probablemente era el aviso de la sesión de `herdr-matrix`; hay que confirmarlo.
+- Un mensaje llegado a la sala `herdr-matrix` tras escribir en `<workspace>` no tiene evidencia de error de enrutado (la auditoría no muestra órdenes de esa sala). Probablemente era el aviso de la sesión de `herdr-matrix`; hay que confirmarlo.
 - `FILEMAP.md`, `ARCHITECTURE.md` y `SECURITY.md` no existen en el repositorio; no se han actualizado.
 
 ## 0.17.2 — 2026-10-26
-
-Commit: `b3d960d736a7e4c1a8359c61bcfa86abd9cca960`
 
 ### Corregido
 
@@ -88,8 +201,6 @@ Commit: `b3d960d736a7e4c1a8359c61bcfa86abd9cca960`
 - `FILEMAP.md`, `ARCHITECTURE.MD` y `SECURITY.md` no existen en el repositorio; no se han actualizado.
 
 ## 0.17.1 — 2026-10-26
-
-Commit: `db37cf8941124447aaabef345feab2e2fd574e36`
 
 ### Cambiado
 
@@ -110,8 +221,6 @@ Commit: `db37cf8941124447aaabef345feab2e2fd574e36`
 - `FILEMAP.md`, `ARCHITECTURE.md` y `SECURITY.md` no existen en el repositorio; no se han actualizado.
 
 ## 0.17.0 — 2026-10-26
-
-Commit: `83a44cd0e12c61ed0d690f6d67bd083d09107f0f`
 
 ### Añadido
 
@@ -140,8 +249,6 @@ Commit: `83a44cd0e12c61ed0d690f6d67bd083d09107f0f`
 
 ## 0.16.0 — 2026-10-26
 
-Commit: `76f8875ce29bafb6c52a22b6cf09e9f3b69388a9`
-
 ### Añadido
 
 - `scripts/install.sh`: comprueba sistema (Darwin o Linux), Node ≥ 22, npm y Herdr (mínimo según `min_herdr_version`). Ejecuta `npm ci --ignore-scripts`, enlaza el plugin con `herdr plugin link --enabled` y lista los pasos siguientes. Con `--setup`, lanza la configuración interactiva.
@@ -165,8 +272,6 @@ Commit: `76f8875ce29bafb6c52a22b6cf09e9f3b69388a9`
 
 ## 0.15.0 — 2026-10-26
 
-Commit: `83a31ad2f984d555641b947d6bfc44d7d8840e7a`
-
 ### Añadido
 
 - Soporte declarado para macOS: `platforms` en `herdr-plugin.toml` incluye `macos`. La validación en un Mac real sigue pendiente (`docs/17-prueba-macos.md`).
@@ -187,8 +292,6 @@ Commit: `83a31ad2f984d555641b947d6bfc44d7d8840e7a`
 - Validación en macOS real según `docs/17-prueba-macos.md`: `setup`, `verify`, `run`, `estado` y `setup --logout`.
 
 ## 0.14.2 — 2026-10-26
-
-Commit: `061693a0fe8b7666c3979dedb6c6e9babc242eef`
 
 ### Cambiado
 
@@ -214,8 +317,6 @@ Commit: `061693a0fe8b7666c3979dedb6c6e9babc242eef`
 
 ## 0.14.1 — 2026-10-26
 
-Commit: `27b0ff11a931c549ad1a649ad785f67668dd444d`
-
 ### Cambiado
 
 - Chat de opencode: sin instrucción de formato al abrir. La instrucción hacía que el modelo respondiera con basura de herramientas, y la primera llamada quedaba colgada.
@@ -233,8 +334,6 @@ Commit: `27b0ff11a931c549ad1a649ad785f67668dd444d`
 
 ## 0.14.0 — 2026-10-26
 
-Commit: `9f8c44e6bd97e158d968d0b78218d9df7d97de92`
-
 ### Añadido
 
 - `chat.opencode_auto` en `config.json` (por defecto `true`): controla `--auto` en `opencode run`. Con `false`, el agente no aprueba permisos automáticamente. Requiere reiniciar el bridge.
@@ -242,8 +341,6 @@ Commit: `9f8c44e6bd97e158d968d0b78218d9df7d97de92`
 - 3 pruebas nuevas. 139 en total.
 
 ## 0.13.0 — 2026-10-26
-
-Commit: `171148efc7145f49d0fd59e9adf857c468fd43f3`
 
 ### Cambiado
 
@@ -261,8 +358,6 @@ Commit: `171148efc7145f49d0fd59e9adf857c468fd43f3`
 
 ## 0.12.0 — 2026-10-26
 
-Commit: `179d9f994a4e1c16f48983368fc9b311d191e83b`
-
 ### Añadido
 
 - Lector de respuestas para opencode (`readOpencodeReply`): lee `opencode.db` (tablas `message` y `part`). Se verificó con una sesión real de opencode existente.
@@ -274,8 +369,6 @@ Commit: `179d9f994a4e1c16f48983368fc9b311d191e83b`
 - `node:sqlite` es experimental en Node 22 y muestra un aviso al cargarse.
 
 ## 0.11.0 — 2026-10-26
-
-Commit: `8ebba186de5daaf17c4cded1b62658da4e1fef54`
 
 ### Añadido
 
@@ -297,8 +390,6 @@ Commit: `8ebba186de5daaf17c4cded1b62658da4e1fef54`
 
 ## 0.10.1 — 2026-10-26
 
-Commit: `1032790a25e490eca6427250952a59e04c9774da`
-
 ### Cambiado
 
 - `estado` muestra el nombre del espacio junto al panel: `[demo-agent · w2:p1] working: claude`.
@@ -312,8 +403,6 @@ Commit: `1032790a25e490eca6427250952a59e04c9774da`
 
 ## 0.10.0 — 2026-10-26
 
-Commit: `09409a81c24771f667ea230fbbbbd064086caece`
-
 ### Añadido
 
 - Interpretación determinista de órdenes (`src/commands.mjs`): sinónimos fijos, tildes ignoradas, una letra de error solo en lectura (`estado` y `leer`, palabras de 5 o más letras), panel en formato `w2:p1`, `W2:P1`, `w2.p1` o `w2 p1`, y confirmaciones `sí`, `si`, `ok`, `confirma`, `confirmo`.
@@ -326,8 +415,6 @@ Commit: `09409a81c24771f667ea230fbbbbd064086caece`
 
 ## 0.9.3 — 2026-10-26
 
-Commit: `7c085058718aee95af2353de10157d57edca0007`
-
 ### Verificado en vivo
 
 - Entrada (Fase 3): `estado`, `enviar` + `confirmar`, `enter` + `confirmar` y `leer` desde salas reales (`leer` procesado en `ferny`, `w3:p1`).
@@ -339,8 +426,6 @@ Commit: `7c085058718aee95af2353de10157d57edca0007`
 - `docs/12` y `docs/13` actualizados con lo verificado. El contenido publicado por `leer` lo confirmó el dueño en Element.
 
 ## 0.9.2 — 2026-10-26
-
-Commit: `eaae348406d0abc8f3b9efceaa28c1e8855a18f9`
 
 ### Añadido
 
@@ -357,8 +442,6 @@ Commit: `eaae348406d0abc8f3b9efceaa28c1e8855a18f9`
 
 ## 0.9.1 — 2026-10-26
 
-Commit: `715230ce17a937bd554fc4475d4d544bdb9dd23b`
-
 ### Añadido
 
 - Las preguntas de invitación pendientes se guardan en `state/pending-invites.json` (0600) y se recuperan tras un reinicio. La pregunta activa se vuelve a enviar con 10 min nuevos.
@@ -373,8 +456,6 @@ Commit: `715230ce17a937bd554fc4475d4d544bdb9dd23b`
 - Respuesta a una invitación real a un segundo usuario: sin segunda cuenta.
 
 ## 0.9.0 — 2026-10-26
-
-Commit: `849fec2bcf3fac521530aa39d9646b138d6ca7d6`
 
 ### Añadido
 
@@ -393,8 +474,6 @@ Commit: `849fec2bcf3fac521530aa39d9646b138d6ca7d6`
 
 ## 0.8.2 — 2026-10-26
 
-Commit: `955473718a483e7bc427781f600ae5ef294dea96`
-
 ### Cambiado
 
 - El parser ignora caracteres invisibles (ancho cero, BOM, guion blando), normaliza Unicode y ignora la puntuación final: `Confirmar,` y `leer w2:p1.` se aceptan.
@@ -411,8 +490,6 @@ Commit: `955473718a483e7bc427781f600ae5ef294dea96`
 
 ## 0.8.1 — 2026-10-26
 
-Commit: `16ce2be84668950fed3bec605e4cd200780e986e`
-
 ### Corregido
 
 - Los listeners de entrada se registran antes de la primera sincronización (`beforeStart` en `startBotClient`). Antes, las órdenes que llegaban justo antes del arranque se perdían sin registro.
@@ -422,8 +499,6 @@ Commit: `16ce2be84668950fed3bec605e4cd200780e986e`
 - En vivo: `estado` del dueño en la sala de control, enviado antes del arranque, se procesó: auditoría `ok`, respuesta con los agentes de todos los espacios. Y en la sala de un espacio, solo los de ese espacio.
 
 ## 0.8.0 — 2026-10-26
-
-Commit: `8faa6d3e7ed3790db0ebc9fab0839926039fa601`
 
 ### Añadido
 
@@ -452,8 +527,6 @@ Commit: `8faa6d3e7ed3790db0ebc9fab0839926039fa601`
 
 ## 0.7.0 — 2026-10-26
 
-Commit: `3266296dd96ac9f455d11ed965b5808f83ba506f`
-
 ### Añadido
 
 - Fase 3, entrada desde la sala (`src/inbound.mjs`, `src/inbound-events.mjs`): órdenes `estado`, `leer`, `enviar` y `enter`. Solo el dueño, solo en salas cifradas, con alcance por sala (la de control solo lee; la escritura va en la sala del espacio).
@@ -476,8 +549,6 @@ Commit: `3266296dd96ac9f455d11ed965b5808f83ba506f`
 - Pregunta de invitado extra en la sala de control (Fase 2b).
 
 ## 0.6.0 — 2026-10-26
-
-Commit: `ce9ef25cfb0d0ebf87c69552cfd57559eb5b250a`
 
 ### Añadido
 
@@ -508,8 +579,6 @@ Commit: `ce9ef25cfb0d0ebf87c69552cfd57559eb5b250a`
 - Clave del almacén junto a `store.bin`: mejora pendiente (keyring o contraseña).
 
 ## 0.5.0 — 2026-10-25
-
-Commit: `5319603670be97da12b44a11f02af0432315f3f0`
 
 ### Añadido
 
@@ -542,8 +611,6 @@ Commit: `5319603670be97da12b44a11f02af0432315f3f0`
 
 ## 0.4.0 — 2026-10-25
 
-Commit: `8ff14007fdfdfe27e74a6ae13ee351fe88e4f138`
-
 ### Añadido
 
 - Salida Herdr → Matrix (`node src/index.mjs run`): bridge con línea base, detección de transiciones por reconciliación con `agent.list`, formato `[workspace/tab/panel] estado: texto`, límite de 1 mensaje por panel cada 10 s, bloqueo de instancia única y parada limpia con SIGINT.
@@ -570,8 +637,6 @@ Commit: `8ff14007fdfdfe27e74a6ae13ee351fe88e4f138`
 
 ## 0.3.0 — 2026-10-25
 
-Commit: `1638ee297642d26527e4b961618b27f2c38e848d`
-
 ### Añadido
 
 - Plugin base de Herdr: `herdr-plugin.toml` con la acción `setup`. Registrado con `herdr plugin link`.
@@ -592,8 +657,6 @@ Commit: `1638ee297642d26527e4b961618b27f2c38e848d`
 - Acción `setup` de Herdr sin terminal interactiva.
 
 ## 0.2.0 — 2026-10-25
-
-Commit: `e131dabbee7c42aa5e34a4a6378b9d96cdc4cb1d`
 
 ### Añadido
 
@@ -618,8 +681,6 @@ Commit: `e131dabbee7c42aa5e34a4a6378b9d96cdc4cb1d`
 - Spike de E2EE con matrix-js-sdk (Fase 0).
 
 ## 0.1.0 — 2026-10-25
-
-Commit: `c55eb59f26d638a34c0e83cff713d69b5c5d9642`
 
 ### Añadido
 

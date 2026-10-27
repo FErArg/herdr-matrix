@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { chunkText, createChatManager, createChatSession, FORMAT_INSTRUCTION, opencodeArgs } from "../src/chat.mjs";
+import { chunkText, createChatManager, createChatSession, FORMAT_INSTRUCTION } from "../src/chat.mjs";
 import { replyAfter, transcriptPath } from "../src/transcript.mjs";
 import { createInbound } from "../src/inbound.mjs";
 
@@ -49,7 +49,7 @@ function fakeChat({ replies = {}, state } = {}) {
   let saved = null;
   const herdr = {
     request: async (method, params) => {
-      if (method === "agent.list") return { agents: [{ pane_id: "w1:p1" }] };
+      if (method === "agent.list") return { agents: [{ pane_id: "w1:p1", workspace_id: "w1", agent: state?.agentKind ?? "claude" }] };
       if (method === "agent.start") return { type: "agent_started" };
       if (method === "agent.prompt") {
         prompts.push(params.text);
@@ -85,6 +85,132 @@ test("si no se puede leer la respuesta, se avisa y la cola avanza", async () => 
   const { session, sent } = fakeChat({ replies: {} });
   await session.enqueue("sin respuesta");
   assert.match(sent[0].text, /no pude leer la respuesta/);
+  assert.equal(session.queued, 0);
+});
+
+test("un fallo al leer la respuesta tras enviar no se anuncia como fallo de envío", async () => {
+  const prompts = [];
+  const sent = [];
+  const session = createChatSession({
+    herdr: {
+      request: async (method, params) => {
+        if (method === "agent.list") return { agents: [{ pane_id: "w1:p1", workspace_id: "w1", agent: "claude" }] };
+        prompts.push(params.text);
+        return { agent: {} };
+      },
+    },
+    sendText: async (roomId, text) => sent.push(text),
+    roomId: ROOM, workspaceId: "w1", paneId: "w1:p1",
+    persist: async () => {}, log: () => {},
+    read: async () => { throw new Error("ENOENT: no such file or directory"); },
+    state: { sessionId: "s1", cwd: "/r" },
+  });
+  await session.enqueue("hola");
+  assert.deepEqual(prompts, ["hola"]);
+  assert.match(sent[0], /no pude leer la respuesta/);
+  assert.doesNotMatch(sent[0], /no se pudo enviar/);
+  assert.equal(session.queued, 0);
+});
+
+test("si el panel pasa a otro agente entre mensajes, no se envía y la sesión queda en pausa", async () => {
+  let kind = "claude";
+  const prompts = [];
+  const sent = [];
+  let saved = null;
+  const session = createChatSession({
+    herdr: {
+      request: async (method, params) => {
+        if (method === "agent.list") return { agents: [{ pane_id: "w1:p1", workspace_id: "w1", agent: kind }] };
+        if (method === "agent.prompt") { prompts.push(params.text); return { agent: { agent_session: { value: "s1" }, cwd: "/r" } }; }
+        throw new Error(`no simulado ${method}`);
+      },
+    },
+    sendText: async (roomId, text) => sent.push(text),
+    roomId: ROOM, workspaceId: "w1", paneId: "w1:p1",
+    persist: async (data) => { saved = data; }, log: () => {},
+    read: async () => "respuesta",
+    state: { agentKind: "claude", cwd: "/r" },
+  });
+  await session.enqueue("uno");
+  kind = "opencode";
+  await session.enqueue("dos");
+  assert.deepEqual(prompts, ["uno"]);
+  assert.equal(session.queued, 1);
+  assert.equal(session.awaitingResume, true);
+  assert.equal(saved.awaitingResume, true);
+  assert.match(sent.at(-1), /sesión en pausa: el agente del workspace ahora es opencode, no claude/);
+});
+
+test("sin agente identificado en el workspace la sesión se pausa y no envía", async () => {
+  const prompts = [];
+  const session = createChatSession({
+    herdr: {
+      request: async (method, params) => {
+        if (method === "agent.list") return { agents: [] };
+        prompts.push(params);
+        return {};
+      },
+    },
+    sendText: async () => {}, roomId: ROOM, workspaceId: "w1", paneId: "w1:p1",
+    persist: async () => {}, log: () => {}, state: { agentKind: "claude" },
+  });
+  await session.enqueue("hola");
+  assert.equal(prompts.length, 0);
+  assert.equal(session.awaitingResume, true);
+  assert.equal(session.queued, 1);
+});
+
+test("confirmar tras una pausa reintenta con el mismo agente y envía", async () => {
+  let kind = "opencode";
+  const prompts = [];
+  const sent = [];
+  const session = createChatSession({
+    herdr: {
+      request: async (method, params) => {
+        if (method === "agent.list") return { agents: [{ pane_id: "w1:p1", workspace_id: "w1", agent: kind }] };
+        if (method === "agent.prompt") prompts.push(params.text);
+        return { agent: { agent_session: { value: "s1" }, cwd: "/r" } };
+      },
+    },
+    sendText: async (roomId, text) => sent.push(text),
+    roomId: ROOM, workspaceId: "w1", paneId: "w1:p1",
+    persist: async () => {}, log: () => {}, read: async () => "ok",
+    state: { agentKind: "claude", cwd: "/r" },
+  });
+  kind = "opencode";
+  await session.enqueue("pendiente");
+  assert.equal(session.awaitingResume, true);
+  assert.equal(prompts.length, 0);
+  kind = "claude";
+  await session.resume();
+  assert.deepEqual(prompts, ["pendiente"]);
+  assert.equal(session.queued, 0);
+  assert.equal(session.awaitingResume, false);
+});
+
+test("open de otro tipo olvida el ID de sesión del tipo anterior", async () => {
+  const session = createChatSession({
+    herdr: { request: async (method) => (method === "agent.list" ? { agents: [{ pane_id: "w1:p1", workspace_id: "w1", agent: "opencode", cwd: "/p" }] } : {}) },
+    sendText: async () => {}, roomId: ROOM, workspaceId: "w1", paneId: "w1:p1",
+    persist: async () => {}, log: () => {}, state: { agentKind: "claude", sessionId: "uuid-de-claude", cwd: "/viejo" },
+  });
+  await session.open("opencode");
+  assert.equal(session.snapshot().sessionId, null);
+  assert.equal(session.snapshot().cwd, "/p");
+});
+
+test("open de claude rechaza un panel con opencode", async () => {
+  const herdr = {
+    request: async (method) => {
+      if (method !== "agent.list") throw new Error(`no debe llamarse ${method}`);
+      return { agents: [{ pane_id: "w1:p1", workspace_id: "w1", agent: "opencode", agent_status: "idle", interactive_ready: true }] };
+    },
+  };
+  const session = createChatSession({
+    herdr, sendText: async () => {}, roomId: ROOM, workspaceId: "w1", paneId: "w1:p1",
+    persist: async () => {}, log: () => {}, sleep: async () => {},
+  });
+  await assert.rejects(session.open("claude"), /el agente del workspace es opencode, no claude/);
   assert.equal(session.queued, 0);
 });
 
@@ -137,7 +263,7 @@ function inboundHarness() {
   const prompts = [];
   const herdr = {
     request: async (method, params) => {
-      if (method === "agent.list") return { agents: [{ pane_id: "w1:p1", interactive_ready: true }] };
+      if (method === "agent.list") return { agents: [{ pane_id: "w1:p1", workspace_id: "w1", agent: "claude", interactive_ready: true }] };
       if (method === "agent.start") return {};
       if (method === "agent.prompt") {
         prompts.push(params.text);
@@ -187,6 +313,32 @@ test("chat pide confirmación, abre la sesión y los mensajes siguientes van al 
   assert.equal(h.prompts.at(-1), "¿qué hay en el repo?");
 });
 
+test("chat con la sesión ya abierta avisa y no se envía al agente", async () => {
+  const h = inboundHarness();
+  await h.inbound.handle(h.msg(ROOM, "chat"));
+  await h.inbound.handle(h.msg(ROOM, "confirmar"));
+  await h.settle();
+  const before = h.prompts.length;
+  await h.inbound.handle(h.msg(ROOM, "chat"));
+  await h.settle();
+  assert.match(h.replies.at(-1).text, /ya hay una sesión de chat abierta/);
+  assert.equal(h.prompts.length, before);
+  assert.equal(h.chats.get(ROOM).queued, 0);
+});
+
+test("con la sesión en pausa, cada mensaje avisa de la pausa en la sala", async () => {
+  const h = inboundHarness();
+  await h.inbound.handle(h.msg(ROOM, "chat"));
+  await h.inbound.handle(h.msg(ROOM, "confirmar"));
+  await h.settle();
+  h.chats.get(ROOM).snapshot().queue.push({ text: "pendiente", at: 0 });
+  h.chats.get(ROOM).pauseForResume();
+  await h.inbound.handle(h.msg(ROOM, "hola"));
+  await h.settle();
+  assert.match(h.replies.at(-1).text, /en pausa; en cola: 2/);
+  assert.equal(h.prompts.length, 1);
+});
+
 test("salir cierra la sesión de chat sin cerrar el agente", async () => {
   const h = inboundHarness();
   await h.inbound.handle(h.msg(ROOM, "chat"));
@@ -204,16 +356,11 @@ test("chat no se abre desde la sala de control", async () => {
   assert.equal(h.chats.has(CONTROL), false);
 });
 
-test("open espera a que el agente esté listo antes de enviar el formato", async () => {
+test("open con un agente ocupado no falla: el formato se envía al quedar libre", async () => {
   const prompts = [];
-  let polls = 0;
   const herdr = {
     request: async (method, params) => {
-      if (method === "agent.list") {
-        polls++;
-        // Primero el agente existe pero no acepta entrada; luego sí.
-        return { agents: [{ pane_id: "w1:p1", workspace_id: "w1", interactive_ready: polls >= 3 }] };
-      }
+      if (method === "agent.list") return { agents: [{ pane_id: "w1:p1", workspace_id: "w1", agent: "claude", agent_status: "working" }] };
       if (method === "agent.prompt") {
         prompts.push(params.text);
         return { agent: { agent_session: { value: "s" }, cwd: "/r" } };
@@ -226,13 +373,20 @@ test("open espera a que el agente esté listo antes de enviar el formato", async
     persist: async () => {}, log: () => {}, sleep: async () => {},
   });
   await session.open();
-  assert.equal(polls, 3);
+  for (let i = 0; i < 10 && session.queued > 0; i++) await new Promise((resolve) => setImmediate(resolve));
   assert.deepEqual(prompts, [FORMAT_INSTRUCTION]);
+  assert.equal(session.queued, 0);
 });
 
-test("open falla si el agente nunca queda listo", async () => {
+test("open de un agente nuevo espera a que esté listo y falla si no lo está", async () => {
   let clock = 0;
-  const herdr = { request: async () => ({ agents: [{ pane_id: "w1:p1", interactive_ready: false }] }) };
+  const herdr = {
+    request: async (method) => {
+      if (method === "agent.list") return { agents: [] };
+      if (method === "agent.start") return {};
+      throw new Error(`no simulado ${method}`);
+    },
+  };
   const session = createChatSession({
     herdr, sendText: async () => {}, roomId: ROOM, workspaceId: "w1", paneId: "w1:p1",
     persist: async () => {}, log: () => {}, now: () => (clock += 60_000), sleep: async () => {},
@@ -244,19 +398,6 @@ test("salir sin sesión abierta avisa en lugar de rechazar la orden", async () =
   const h = inboundHarness();
   await h.inbound.handle(h.msg(ROOM, "Salir"));
   assert.match(h.replies.at(-1).text, /no hay ninguna sesión de chat abierta/);
-});
-
-test("opencodeReplyAfter devuelve solo el texto del asistente tras el mensaje enviado", async () => {
-  const { opencodeReplyAfter } = await import("../src/transcript.mjs");
-  const messages = [
-    { id: "msg_1", role: "user", created: 1, parts: [{ type: "text", text: "anterior" }] },
-    { id: "msg_2", role: "assistant", created: 2, parts: [{ type: "text", text: "vieja" }] },
-    { id: "msg_3", role: "user", created: 3, parts: [{ type: "text", text: "cuánto es 2+2" }] },
-    { id: "msg_4", role: "assistant", created: 4, parts: [{ type: "reasoning", text: "pienso" }, { type: "text", text: "4" }] },
-    { id: "msg_5", role: "assistant", created: 5, parts: [{ type: "text", text: "y además" }] },
-  ];
-  assert.equal(opencodeReplyAfter(messages, "cuánto es 2+2"), "4\n\ny además");
-  assert.equal(opencodeReplyAfter(messages, "no está"), null);
 });
 
 test("chat opencode abre opencode y chat sin tipo abre claude", async () => {
@@ -379,13 +520,6 @@ test("opencode envía con runOpencode y lee la respuesta de la base, sin tocar e
   assert.deepEqual(sent, ["respuesta a hola en ses_nueva"]);
 });
 
-test("opencodeArgs incluye --auto solo si está activado", () => {
-  const withAuto = opencodeArgs({ sessionId: "ses_1", text: "hola", auto: true });
-  assert.ok(withAuto.includes("--auto"));
-  assert.deepEqual(withAuto.slice(-3), ["--session", "ses_1", "hola"]);
-  assert.ok(!opencodeArgs({ sessionId: null, text: "hola", auto: false }).includes("--auto"));
-});
-
 test("con opencode_auto desactivado, el envío a opencode no pide auto", async () => {
   const calls = [];
   const session = createChatSession({
@@ -415,7 +549,8 @@ test("un fallo al enviar a opencode se avisa en la sala y la cola sigue", async 
   const sent = [];
   let attempts = 0;
   const session = createChatSession({
-    herdr: { request: async () => ({}) }, sendText: async (roomId, text) => sent.push(text), roomId: ROOM, workspaceId: "w1", paneId: "w1:p1",
+    herdr: { request: async () => ({ agents: [{ pane_id: "w1:p1", workspace_id: "w1", agent: "opencode" }] }) },
+    sendText: async (roomId, text) => sent.push(text), roomId: ROOM, workspaceId: "w1", paneId: "w1:p1",
     persist: async () => {}, log: () => {},
     runAgentOpencode: async ({ text }) => {
       attempts++;
@@ -430,4 +565,71 @@ test("un fallo al enviar a opencode se avisa en la sala y la cola sigue", async 
   assert.match(sent[0], /no se pudo enviar el mensaje al agente: tiempo agotado/);
   assert.equal(sent[1], "ok segundo");
   assert.equal(session.queued, 0);
+});
+
+test("opencode usa la sesión que muestra el panel, no una nueva", async () => {
+  const sessions = [];
+  const session = createChatSession({
+    herdr: {
+      request: async (method) => {
+        if (method !== "agent.list") throw new Error(`no simulado ${method}`);
+        return { agents: [{ pane_id: "w1:p1", workspace_id: "w1", agent: "opencode", cwd: "/p", agent_session: { value: "ses_pane" } }] };
+      },
+    },
+    sendText: async () => {}, roomId: ROOM, workspaceId: "w1", paneId: "w1:p1",
+    persist: async () => {}, log: () => {}, state: { agentKind: "claude", sessionId: "ses_vieja" },
+    runAgentOpencode: async ({ sessionId }) => { sessions.push(sessionId); return sessionId; },
+    readOpencode: async () => "ok",
+  });
+  await session.open("opencode");
+  assert.equal(session.snapshot().sessionId, "ses_pane");
+  await session.enqueue("hola");
+  assert.deepEqual(sessions, ["ses_pane"]);
+});
+
+test("un permiso de opencode queda pendiente hasta que el dueño permite o rechaza", async () => {
+  const decisions = [];
+  let finish;
+  const session = createChatSession({
+    herdr: { request: async () => ({ agents: [{ pane_id: "w1:p1", workspace_id: "w1", agent: "opencode" }] }) },
+    sendText: async () => {}, roomId: ROOM, workspaceId: "w1", paneId: "w1:p1",
+    persist: async () => {}, log: () => {}, opencodeAuto: false,
+    runAgentOpencode: async ({ onPermission }) => {
+      onPermission({ id: "per_1", action: "bash", resources: ["rm x"] });
+      await new Promise((resolve) => { finish = resolve; });
+      return "ses_1";
+    },
+    replyAgentPermission: async (args) => decisions.push(args),
+    readOpencode: async () => "ok",
+    state: { agentKind: "opencode", sessionId: "ses_1", cwd: "/p" },
+  });
+  const running = session.enqueue("hola");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(session.hasPendingPermission, true);
+  assert.equal(await session.decidePermission("once"), true);
+  assert.deepEqual(decisions, [{ sessionId: "ses_1", requestId: "per_1", decision: "once" }]);
+  assert.equal(session.hasPendingPermission, false);
+  assert.equal(await session.decidePermission("reject"), false);
+  finish();
+  await running;
+});
+
+test("interrupt en una sesión de opencode llama a la API; con otro agente no hace nada", async () => {
+  const calls = [];
+  const opencode = createChatSession({
+    herdr: { request: async () => ({}) }, sendText: async () => {}, roomId: ROOM, workspaceId: "w1", paneId: "w1:p1",
+    persist: async () => {}, log: () => {},
+    interruptAgent: async (args) => calls.push(args),
+    state: { agentKind: "opencode", sessionId: "ses_1" },
+  });
+  assert.equal(await opencode.interrupt(), true);
+  assert.deepEqual(calls, [{ sessionId: "ses_1" }]);
+  const claude = createChatSession({
+    herdr: { request: async () => ({}) }, sendText: async () => {}, roomId: ROOM, workspaceId: "w1", paneId: "w1:p1",
+    persist: async () => {}, log: () => {},
+    interruptAgent: async (args) => calls.push(args),
+    state: { agentKind: "claude", sessionId: "s" },
+  });
+  assert.equal(await claude.interrupt(), false);
+  assert.equal(calls.length, 1);
 });

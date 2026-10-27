@@ -14,6 +14,9 @@ export const SUBSCRIPTION_TYPES = [
   "workspace.closed",
 ];
 export const DEFAULT_NOTIFY_EVENTS = ["blocked", "done", "exited"];
+const CLOSING_KINDS = ["done", "idle", "exited"];
+const PANEL_LINES = 20;
+const TURN_TIMEOUT_MS = 5_000;
 const DEBOUNCE_MS = 300;
 const SAFETY_RECONCILE_MS = 30_000;
 
@@ -25,10 +28,14 @@ export function routeRoom(config, workspaceId) {
 }
 
 // rooms: gestor de salas por workspace (src/rooms.mjs), o null para no crear salas.
+// chats: gestor de sesiones de chat (src/chat.mjs). cards: tarjetas de tarea (src/cards.mjs).
+// La tarjeta solo existe con sesión de chat abierta en su workspace.
 export function createOutbound({
   herdr,
   sender,
   rooms = null,
+  chats = null,
+  cards = null,
   config,
   snapshot,
   saveSnapshot,
@@ -62,6 +69,7 @@ export function createOutbound({
 
     const result = { sent: 0, dropped: 0, failed: 0 };
     for (const { kind, agent } of transitions) {
+      await followCard(kind, agent);
       if (!notifyKinds.has(kind)) continue;
       const roomId = routeRoom(config, agent.workspace_id);
       if (!roomId || !limiter.allow(agent.pane_id)) {
@@ -81,9 +89,53 @@ export function createOutbound({
       } catch (error) {
         result.failed++;
         log(`mensaje no enviado (${kind} en ${agent.pane_id}): ${error.message}`);
+        continue;
       }
     }
     return result;
+  }
+
+  // Turno del agente con límite de tiempo. Sin sesión de chat o si no responde a tiempo, null.
+  async function turnOf(workspaceId) {
+    const session = chats?.findByWorkspace(workspaceId);
+    if (!session) return null;
+    let timer;
+    const timeout = new Promise((resolve) => {
+      timer = setTimeout(() => resolve(null), TURN_TIMEOUT_MS);
+    });
+    try {
+      return await Promise.race([session.turn().catch(() => null), timeout]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  async function readPanel(paneId) {
+    const result = await herdr.request("pane.read", {
+      pane_id: paneId, source: "recent", lines: PANEL_LINES, format: "text", strip_ansi: true,
+    });
+    return result.read?.text ?? "";
+  }
+
+  // Tarjeta de la tarea: abre al empezar, muestra la decisión pendiente y cierra al terminar.
+  // Un fallo aquí no detiene los avisos de estado.
+  async function followCard(kind, agent) {
+    if (!cards) return;
+    const { pane_id: paneId, workspace_id: workspaceId } = agent;
+    try {
+      if (kind === "started") {
+        const session = chats?.findByWorkspace(workspaceId);
+        if (!session) return;
+        const turn = await turnOf(workspaceId);
+        await cards.open({ roomId: session.roomId, workspaceId, paneId, task: turn?.request ?? null });
+      } else if (kind === "blocked") {
+        if (cards.get(paneId)) await cards.decide({ paneId, lines: await readPanel(paneId) });
+      } else if (CLOSING_KINDS.includes(kind)) {
+        if (cards.get(paneId)) await cards.close({ paneId, kind, turn: await turnOf(workspaceId) });
+      }
+    } catch (error) {
+      log(`tarjeta (${kind} en ${paneId}): ${error.message}`);
+    }
   }
 
   // Las reconciliaciones van una a una: una señal no se solapa con otra en curso.

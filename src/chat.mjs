@@ -3,104 +3,10 @@
 // uno a uno (agent.prompt con espera). La respuesta se lee de la transcripción y se publica completa,
 // en trozos si hace falta. La cola se guarda para no perder mensajes tras un reinicio.
 
-import { spawn } from "node:child_process";
-import { readOpencodeReply, readReply } from "./transcript.mjs";
+import { readReply, readTurn } from "./transcript.mjs";
+import { describePermission, interruptOpencode, readOpencodeApiTurn, readOpencodeReply, replyOpencodePermission, runOpencode } from "./opencode-api.mjs";
 
 export const AGENT_KINDS = ["claude", "opencode"];
-// opencode run no tiene con quién confirmar permisos: --auto los aprueba, igual que el modo automático de Claude.
-const OPENCODE_BIN = process.env.OPENCODE_BIN || "opencode";
-const OPENCODE_PROMPT_TIMEOUT_MS = 3 * 60_000;
-const OPENCODE_POLL_MS = 2_000;
-const OPENCODE_SETTLE_MS = 3_000;
-
-// Argumentos de `opencode run`. `auto` aprueba los permisos sin preguntar (config: chat.opencode_auto).
-export function opencodeArgs({ sessionId, text, auto }) {
-  return [
-    "run",
-    "--format",
-    "json",
-    ...(auto ? ["--auto"] : []),
-    ...(sessionId ? ["--session", sessionId] : []),
-    text,
-  ];
-}
-
-// Envía un mensaje a una sesión de opencode (la crea si no hay). Devuelve el ID de sesión.
-// `opencode run` puede no terminar aunque la respuesta ya esté guardada: por eso, mientras corre,
-// se mira la base y, cuando aparece la respuesta, se da la llamada por buena y se cierra el proceso.
-// cwd: directorio del proyecto del workspace. opencode guarda sus sesiones por proyecto, así que
-// ejecutarlo en otro directorio mezcla proyectos.
-export function runOpencode({
-  sessionId,
-  text,
-  cwd,
-  auto = true,
-  log = () => {},
-  read = readOpencodeReply,
-  timeoutMs = OPENCODE_PROMPT_TIMEOUT_MS,
-  pollMs = OPENCODE_POLL_MS,
-  settleMs = OPENCODE_SETTLE_MS,
-}) {
-  return new Promise((resolve, reject) => {
-    if (!cwd) return reject(new Error("falta el directorio del proyecto para opencode"));
-    const args = opencodeArgs({ sessionId, text, auto });
-    const started = Date.now();
-    log(`opencode run: inicio (sesión ${sessionId ?? "nueva"}, auto ${auto}, cwd ${cwd})`);
-    const child = spawn(OPENCODE_BIN, args, { cwd, stdio: ["ignore", "pipe", "pipe"] });
-    let known = sessionId ?? null;
-    let buffered = "";
-    let finished = false;
-    let timer = null;
-    let poll = null;
-
-    function finish(error, value) {
-      if (finished) return;
-      finished = true;
-      clearTimeout(timer);
-      clearInterval(poll);
-      if (child.exitCode === null) child.kill("SIGTERM");
-      const seconds = Math.round((Date.now() - started) / 1000);
-      if (error) {
-        log(`opencode run: fallo tras ${seconds} s: ${error.message.slice(0, 200)}`);
-        reject(error);
-      } else {
-        log(`opencode run: fin tras ${seconds} s`);
-        resolve(value);
-      }
-    }
-
-    child.stdout.on("data", (chunk) => {
-      buffered += chunk;
-      for (const line of buffered.split("\n")) {
-        try {
-          const event = JSON.parse(line);
-          if (!known && event.sessionID) known = event.sessionID;
-        } catch {
-          // Las líneas parciales o no JSON no aportan el ID de sesión.
-        }
-      }
-      buffered = buffered.slice(buffered.lastIndexOf("\n") + 1);
-    });
-    child.stderr.resume();
-    child.on("error", (error) => finish(error));
-    child.on("exit", (code) => {
-      if (known) finish(null, known);
-      else finish(new Error(`opencode terminó con código ${code} sin ID de sesión`));
-    });
-
-    timer = setTimeout(() => finish(new Error("opencode no respondió a tiempo")), timeoutMs);
-    poll = setInterval(async () => {
-      if (!known || finished) return;
-      const reply = await read({ sessionId: known, sentText: text }).catch(() => null);
-      if (reply) {
-        // Pequeña espera para que la respuesta esté completa antes de cerrar el proceso.
-        setTimeout(() => finish(null, known), settleMs);
-        clearInterval(poll);
-      }
-    }, pollMs);
-  });
-}
-
 export const FORMAT_INSTRUCTION =
   "A partir de ahora, responde en texto plano y breve, apto para leerse en un mensaje de chat. No uses tablas ni bloques de código salvo que te lo pidan.";
 export const CHUNK_MAX = 3500;
@@ -133,6 +39,9 @@ export function agentOfWorkspace(agents, workspaceId) {
   return own[0] ?? null;
 }
 
+// El agente del panel no es el de la sesión (o no se puede identificar). La sesión se pausa; nada se envía.
+export class AgentChangedError extends Error {}
+
 // Sesión de chat de un espacio. Dependencias inyectadas: herdr (request), sendText(roomId, text),
 // leer transcripción (readReply), persistencia y reloj.
 
@@ -147,7 +56,10 @@ export function createChatSession({
   now = () => Date.now(),
   read = readReply,
   readOpencode = readOpencodeReply,
+  readOpencodeCard = readOpencodeApiTurn,
   runAgentOpencode = runOpencode,
+  replyAgentPermission = replyOpencodePermission,
+  interruptAgent = interruptOpencode,
   opencodeAuto = true,
   sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   state = {},
@@ -163,6 +75,25 @@ export function createChatSession({
     awaitingResume: Boolean(state.awaitingResume),
   };
   let running = false;
+  // Permiso de opencode pendiente de decisión. No se guarda: si el bridge se reinicia, el turno ya no existe.
+  let pendingPermission = null;
+
+  // El dueño decide el permiso pendiente. Devuelve false si no hay ninguno.
+  async function decidePermission(decision) {
+    if (!pendingPermission) return false;
+    const { sessionId, requestId } = pendingPermission;
+    pendingPermission = null;
+    await replyAgentPermission({ sessionId, requestId, decision });
+    return true;
+  }
+
+  // Interrumpe el turno de opencode. Con otro agente no hace nada y devuelve false.
+  async function interrupt() {
+    if (session.agentKind !== "opencode" || !session.sessionId) return false;
+    pendingPermission = null;
+    await interruptAgent({ sessionId: session.sessionId });
+    return true;
+  }
 
   const save = () => persist(snapshot());
   const snapshot = () => ({
@@ -186,12 +117,44 @@ export function createChatSession({
     }
   }
 
+  // Antes de cada envío, el agente del panel se lee de Herdr: si ya no es del tipo de la sesión, nada sale.
+  async function checkAgentKind() {
+    const { agents } = await herdr.request("agent.list", {});
+    let agent;
+    try {
+      agent = agentOfWorkspace(agents, workspaceId);
+    } catch (error) {
+      throw new AgentChangedError(`${error.message}; la sesión queda en pausa.`);
+    }
+    if (!agent?.agent) {
+      throw new AgentChangedError("no se identifica el agente del workspace; la sesión queda en pausa.");
+    }
+    if (agent.agent !== session.agentKind) {
+      throw new AgentChangedError(`el agente del workspace ahora es ${agent.agent}, no ${session.agentKind}; la sesión queda en pausa.`);
+    }
+    session.paneId = agent.pane_id;
+    // opencode: la sesión que muestra el panel es la que debe recibir el mensaje, para que la TUI lo vea.
+    if (session.agentKind === "opencode" && agent.agent_session?.value) session.sessionId = agent.agent_session.value;
+  }
+
+  // Permiso pedido por opencode con `chat.opencode_auto` desactivado: la sala avisa y el dueño decide.
+  function askPermission(request) {
+    pendingPermission = { sessionId: session.sessionId, requestId: request.id };
+    say(`opencode pide permiso: ${describePermission(request)}. Responde permitir (una vez) o rechazar.`);
+  }
+
   // Envía un texto al agente y espera a que termine. Devuelve el ID de sesión del agente.
   async function promptAgent(text) {
+    await checkAgentKind();
     if (session.agentKind === "opencode") {
-      session.sessionId = await runAgentOpencode({
-        sessionId: session.sessionId, text, cwd: session.cwd, auto: opencodeAuto, log,
-      });
+      try {
+        session.sessionId = await runAgentOpencode({
+          sessionId: session.sessionId, text, cwd: session.cwd, auto: opencodeAuto, log,
+          onPermission: (request) => askPermission(request),
+        });
+      } finally {
+        pendingPermission = null;
+      }
       return {};
     }
     // El cliente espera más que la espera del agente; si no, corta antes y Herdr registra client_disconnected.
@@ -221,6 +184,11 @@ export function createChatSession({
   // Abre la sesión: arranca el agente si el panel no tiene uno, espera a que esté listo y pide el formato breve.
   async function open(kind = "claude") {
     if (!AGENT_KINDS.includes(kind)) throw new Error(`agente no soportado: ${kind}`);
+    // Un ID de sesión solo vale para el tipo de agente que lo creó: al cambiar de tipo se olvida.
+    if (session.agentKind !== kind) {
+      session.sessionId = null;
+      session.cwd = null;
+    }
     session.agentKind = kind;
     if (kind === "opencode") {
       // opencode no necesita instrucción de formato: la sesión se crea con el primer mensaje, en el
@@ -231,21 +199,27 @@ export function createChatSession({
       if (agent?.agent !== "opencode" || !agent.cwd) throw new Error("no hay opencode detectado en el workspace");
       session.paneId = agent.pane_id;
       session.cwd = agent.cwd;
+      // La sesión de la TUI: el chat escribe en la misma conversación que ve el dueño en el panel.
+      session.sessionId = agent.agent_session?.value ?? session.sessionId;
       await save();
       return;
     }
     const { agents } = await herdr.request("agent.list", {});
     const agent = agentOfWorkspace(agents, workspaceId);
     if (agent) {
+      // Un agente de otro tipo en el panel haría que la respuesta se busque en una transcripción que no existe.
+      if (agent.agent !== kind) throw new Error(`el agente del workspace es ${agent.agent}, no ${kind}`);
+      // Un agente ocupado no tumba la sesión: el formato va en la cola y se envía cuando esté libre.
       session.paneId = agent.pane_id;
     } else {
-      // Sin agente en el workspace: se arranca uno en su panel principal.
+      // Sin agente en el workspace: se arranca uno en su panel principal y se espera a que esté listo.
       session.paneId = `${workspaceId}:p1`;
       await herdr.request("agent.start", { name: `chat-${workspaceId}`, kind, pane_id: session.paneId, timeout_ms: 60_000 });
+      await waitUntilReady();
     }
-    await waitUntilReady();
-    await promptAgent(FORMAT_INSTRUCTION);
+    session.queue.unshift({ text: FORMAT_INSTRUCTION, at: now(), internal: true });
     await save();
+    drain();
   }
 
   // Respuesta del último mensaje, leída de la transcripción del agente que se abrió.
@@ -258,6 +232,16 @@ export function createChatSession({
     return read({ cwd: session.cwd, sessionId: session.sessionId, sentText });
   }
 
+  // Turno actual del agente (pedido, respuesta, cambios, errores), para la tarjeta. Null si no se puede leer.
+  async function turn() {
+    if (!session.sessionId) return null;
+    if (session.agentKind === "opencode") {
+      return readOpencodeCard({ sessionId: session.sessionId });
+    }
+    if (!session.cwd) return null;
+    return readTurn({ cwd: session.cwd, sessionId: session.sessionId });
+  }
+
   // Procesa la cola en orden. Un mensaje se quita solo cuando su respuesta se ha publicado.
   async function drain() {
     if (running) return;
@@ -265,18 +249,32 @@ export function createChatSession({
     try {
       while (session.queue.length && !session.awaitingResume) {
         const item = session.queue[0];
-        let reply = null;
         try {
           await promptAgent(item.text);
-          reply = await replyFor(item.text);
         } catch (error) {
+          if (error instanceof AgentChangedError) {
+            // La cola se conserva; solo `salir` la descarta. `confirmar` la reintenta, y vuelve a comprobar el agente.
+            log(`sesión pausada: ${error.message}`);
+            session.awaitingResume = true;
+            await save();
+            await say(`sesión en pausa: ${error.message}`);
+            return;
+          }
           log(`envío al agente fallido: ${error.message}`);
           await say(`no se pudo enviar el mensaje al agente: ${error.message.slice(0, 200)}`);
           session.queue.shift();
           await save();
           continue;
         }
-        await say(reply ?? "no pude leer la respuesta del agente (el agente sigue trabajando o no hay transcripción).");
+        // El mensaje ya llegó al agente: un fallo al leer la respuesta no es un fallo de envío.
+        let reply = null;
+        try {
+          reply = await replyFor(item.text);
+        } catch (error) {
+          log(`lectura de la respuesta fallida: ${error.message}`);
+        }
+        // La instrucción de formato es interna: no se publica su respuesta.
+        if (!item.internal) await say(reply ?? "no pude leer la respuesta del agente (el agente sigue trabajando o no hay transcripción).");
         session.queue.shift();
         await save();
       }
@@ -289,7 +287,9 @@ export function createChatSession({
 
   return {
     roomId,
+    workspaceId,
     snapshot,
+    turn,
     get queued() {
       return session.queue.length;
     },
@@ -326,8 +326,14 @@ export function createChatSession({
       return Math.round((now() - session.queue[0].at) / 60_000);
     },
 
+    get hasPendingPermission() {
+      return pendingPermission !== null;
+    },
+
     open,
     say,
+    decidePermission,
+    interrupt,
   };
 }
 
@@ -370,6 +376,10 @@ export function createChatManager({ herdr, sendText, persistAll, restore = [], l
     async close(roomId) {
       sessions.delete(roomId);
       await persistAll(all());
+    },
+    // Sesión abierta en ese workspace, o null. Nunca se devuelve la de otro workspace.
+    findByWorkspace(workspaceId) {
+      return [...sessions.values()].find((item) => item.workspaceId === workspaceId) ?? null;
     },
     all,
     pending() {

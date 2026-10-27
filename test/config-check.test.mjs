@@ -43,6 +43,12 @@ test("rooms con workspace, sala o estado inválidos se señalan por índice", ()
   assert.ok(problems.some((p) => p.startsWith("rooms[1].status")));
 });
 
+test("los ids de workspace de Herdr con letras (wA, wB) son válidos", () => {
+  const config = valid();
+  config.rooms.push({ workspace_id: "wA", label: "proyecto-ejemplo", room_id: "!voice", status: "active" });
+  assert.deepEqual(configProblems(config), []);
+});
+
 test("notify_events con tipos desconocidos se señala", () => {
   const config = valid();
   config.notify_events = ["blocked", "borrar"];

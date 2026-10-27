@@ -10,6 +10,7 @@
 
 import { COMMANDS, foldWord, isConfirmation, normalizeBody, paneWorkspace, parseCommand } from "./commands.mjs";
 import { AGENT_KINDS } from "./chat.mjs";
+import { CANCEL_KEY, consultaOf, formatCambios, formatDetalle, formatVer, gitState } from "./consultas.mjs";
 
 // En la auditoría de órdenes no reconocidas solo va la primera palabra: nunca el resto del mensaje.
 const WORD_AUDIT_MAX = 20;
@@ -124,8 +125,51 @@ export function createInbound({
       const result = await herdr.request(COMMANDS.leer.method, herdrParams(verb, args));
       return cleanOutput(result.read?.text) || "(panel vacío)";
     }
+    if (verb === "cancelar") {
+      // opencode se interrumpe por su API (el turno termina); los demás agentes reciben Escape en el panel.
+      if (await chats?.get(roomId)?.interrupt()) return "turno de opencode interrumpido.";
+      await herdr.request("pane.send_keys", { pane_id: args.pane, keys: [CANCEL_KEY] });
+      return "Escape enviado al panel.";
+    }
     await herdr.request(COMMANDS[verb].method, herdrParams(verb, args));
     return verb === "enviar" ? "texto enviado al panel." : "tecla enviada al panel.";
+  }
+
+  // Consultas de la tarjeta (detalle, ver, cambios, cancelar). Solo con sesión de chat abierta en la sala.
+  async function handleConsulta({ roomId, sender: from }, query) {
+    if (!withinRateLimit(from)) {
+      await reply(roomId, "demasiadas órdenes en poco tiempo; espera un minuto.");
+      await record({ sender: from, room: roomId, verb: query.verb, pane: "-", result: "rechazada: límite de frecuencia" });
+      return;
+    }
+    const session = chats.get(roomId);
+    const { cwd, paneId } = session.snapshot();
+    const pane = paneId ?? "-";
+    const turn = query.verb === "detalle" || query.verb === "ver" ? await session.turn().catch(() => null) : null;
+
+    if (query.verb === "ver") {
+      if (!turn) await reply(roomId, "no se pudo leer la transcripción del turno.");
+      else for (const chunk of formatVer(turn)) await reply(roomId, chunk);
+    } else if (query.verb === "detalle") {
+      if (query.n === null) await reply(roomId, "uso: detalle [número], entre 1 y 30.");
+      else if (!turn) await reply(roomId, "no se pudo leer la transcripción del turno.");
+      else await reply(roomId, formatDetalle(turn.actions, query.n));
+    } else if (query.verb === "cambios") {
+      if (!cwd) {
+        await reply(roomId, "todavía no hay directorio del proyecto: envía un mensaje al agente primero.");
+      } else {
+        try {
+          await reply(roomId, formatCambios(await gitState(cwd)));
+        } catch {
+          await reply(roomId, "no se pudo leer el estado de git: ¿es el directorio un repositorio?");
+        }
+      }
+    } else {
+      pending.set(from, { verb: "cancelar", args: { pane }, roomId, expiresAt: now() + CONFIRM_TIMEOUT_MS });
+      const action = session.snapshot().agentKind === "opencode" ? "interrumpir el turno de opencode" : `enviar Escape al panel ${pane}`;
+      await reply(roomId, `¿${action}? Responde confirmar en 60 s. Cualquier otro mensaje lo cancela.`);
+    }
+    await record({ sender: from, room: roomId, verb: query.verb, pane, result: "ok" });
   }
 
   async function handleOrder({ roomId, sender: from, body }, scope) {
@@ -213,6 +257,25 @@ export function createInbound({
       }
     }
 
+    const query = consultaOf(body);
+    // Con sesión abierta, la confirmación de una consulta pendiente (cancelar) y las consultas van antes que el agente.
+    if (!scope.control && chats?.has(roomId)) {
+      if (pending.has(from)) {
+        if (isConfirmation(body)) {
+          await handleConfirmation({ roomId, sender: from });
+          return;
+        }
+        const cancelled = pending.get(from);
+        pending.delete(from);
+        await record({ sender: from, room: roomId, verb: cancelled.verb, pane: cancelled.args.pane ?? "-", result: "cancelada por otro mensaje" });
+        await reply(roomId, "la orden pendiente se ha cancelado.");
+      }
+      if (query) {
+        await handleConsulta({ roomId, sender: from }, query);
+        return;
+      }
+    }
+
     // Sesión de chat abierta en esta sala: todo va al agente, salvo `salir` y la reanudación tras reiniciar.
     if (!scope.control && chats?.has(roomId)) {
       const session = chats.get(roomId);
@@ -221,6 +284,20 @@ export function createInbound({
         await chats.close(roomId);
         await reply(roomId, "sesión de chat cerrada; el agente sigue abierto.");
         await record({ sender: from, room: roomId, verb: "chat", pane: "-", result: "sesión cerrada" });
+        return;
+      }
+      // Decisión sobre un permiso de opencode pedido durante el turno (el turno sigue ocupando la cola).
+      if ((word === "permitir" || word === "rechazar") && session.hasPendingPermission) {
+        const allowed = word === "permitir";
+        try {
+          await session.decidePermission(allowed ? "once" : "reject");
+          await reply(roomId, allowed ? "permiso concedido una vez." : "permiso rechazado.");
+          await record({ sender: from, room: roomId, verb: word, pane: "-", result: "ok" });
+        } catch (error) {
+          log(`decisión de permiso fallida: ${error.message}`);
+          await reply(roomId, `no se pudo enviar la decisión a opencode: ${error.message.slice(0, 200)}`);
+          await record({ sender: from, room: roomId, verb: word, pane: "-", result: "fallida" });
+        }
         return;
       }
       if (session.awaitingResume && (word === "confirmar" || word === "descartar")) {
@@ -234,8 +311,18 @@ export function createInbound({
         await record({ sender: from, room: roomId, verb: "chat", pane: "-", result: `pendientes: ${word}` });
         return;
       }
+      // `chat` con la sesión ya abierta: no se reenvía al agente, se avisa en la sala.
+      if (chatRequest(body)) {
+        await reply(roomId, `ya hay una sesión de chat abierta en ${labelOf(session.workspaceId)}. Escribe salir para cerrarla.`);
+        await record({ sender: from, room: roomId, verb: "chat", pane: "-", result: "ignorada: sesión ya abierta" });
+        return;
+      }
       session.enqueue(body).catch((error) => log(`mensaje de chat fallido: ${error.message}`));
-      await reply(roomId, `recibido; en cola: ${session.queued}`);
+      if (session.awaitingResume) {
+        await reply(roomId, `en pausa; en cola: ${session.queued}. Escribe confirmar para reintentar o salir para cerrar la sesión.`);
+      } else {
+        await reply(roomId, `recibido; en cola: ${session.queued}`);
+      }
       await record({ sender: from, room: roomId, verb: "chat", pane: "-", result: "en cola" });
       return;
     }
@@ -249,6 +336,11 @@ export function createInbound({
       pending.delete(from);
       await record({ sender: from, room: roomId, verb: cancelled.verb, pane: cancelled.args.pane, result: "cancelada por otro mensaje" });
       await reply(roomId, "la orden pendiente se ha cancelado.");
+    }
+    // Sin sesión de chat la consulta se ignora: no se responde nada (decisión 2 del plan).
+    if (query && !scope.control) {
+      await record({ sender: from, room: roomId, verb: query.verb, pane: "-", result: "ignorada: sin sesión de chat" });
+      return;
     }
     if (chats && foldWord(normalizeBody(body)) === "salir") {
       await reply(roomId, "no hay ninguna sesión de chat abierta en este espacio.");

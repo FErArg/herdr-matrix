@@ -20,8 +20,10 @@ export function sanitize(value) {
 
 // Tipo de aviso para un cambio de estado. Herdr marca "done" solo en algunos casos; un agente que pasa
 // de working a idle también ha terminado, así que se avisa como "done".
+// `started` es interno: abre la tarjeta de tarea y no se envía como aviso (ver DEFAULT_NOTIFY_EVENTS).
 export function kindOf(before, agent) {
   if (before?.agent_status === "working" && agent.agent_status === "idle") return "done";
+  if (agent.agent_status === "working" && before?.agent_status !== "working") return "started";
   return agent.agent_status;
 }
 

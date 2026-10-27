@@ -2,7 +2,7 @@
 
 Herdr plugin that publishes agent updates to encrypted Matrix rooms and receives commands from the owner's chat.
 
-Status: version 0.18.2. See `CHANGELOG.md` for what is verified and what is pending, and `docs/` for the design of each phase.
+Status: version 0.24.1. See `CHANGELOG.md` for what is verified and what is pending, and `docs/` for the design of each phase.
 
 License: GNU GPL v3 (see `LICENSE`).
 
@@ -74,6 +74,7 @@ Chat rules:
 - A workspace has one agent. If there is more than one, the chat does not open.
 - Messages from a room reach only the agent of its workspace. No agent from another workspace answers in that room.
 - opencode runs in the workspace's directory, not the bridge's directory.
+- Before each message, the bridge checks that the workspace's agent is still the type the session was opened with. If it changed (for example, from Claude Code to opencode), nothing is sent: the session pauses and the room says so. Write `salir`, then open the session again with the new agent's type.
 
 ### Chat with Claude Code
 
@@ -90,10 +91,22 @@ While the agent is working, messages keep their order. Write `salir` to close th
 Write `chat opencode` in the workspace's room and confirm with `confirmar`. The bridge:
 
 1. Looks for the workspace's agent. It must be opencode and have a project directory. If it cannot find one, it does not open the session.
-2. Each room message runs `opencode run` in the workspace's project directory, with `--auto` (approves permissions without asking) and in the same opencode session as the previous message. The first message creates the session.
-3. The reply is read from opencode's database (`~/.local/share/opencode/opencode.db`) and posted to the room. If `opencode run` does not finish within 3 min, the bridge reports it in the room.
+2. Each room message is sent through the API of the opencode background service (`opencode api`), in a session of the workspace's project directory. The first message creates the session; the next ones go to the same session.
+3. The bridge waits for the turn to finish and posts the reply to the room. With `chat.opencode_auto` (on by default), permission requests are approved once. With it off, the room shows each permission request: the owner answers `permitir` (once) or `rechazar`. An approval is never remembered (`always` is not offered from the room). If nobody answers, the turn fails after 3 min, reported in the room.
 
-With opencode, the TUI pane and the chat do not coordinate: if the TUI is busy with another task, the message waits or fails on timeout. A workspace with two agents does not open the chat.
+The TUI and the chat share the same opencode session, so messages from the room appear in the TUI. If the TUI is busy with another task, the message waits or fails on timeout. A workspace with two agents does not open the chat.
+
+### Task card
+
+When an agent with an open chat session starts working on a task (from Herdr or from the room), the bridge posts a task card in the workspace room and edits it as the task progresses:
+
+- `Estado: trabajando` when the task starts.
+- `Estado: necesita decisión` with the last lines of the pane and the command to answer (`enviar <panel> <texto>`, then `confirmar`).
+- `Estado: terminó`, `error`, `sin resultado` or `interrumpida` when it ends, with the final reply, the files edited by Claude Code (`Cambios`) and tool errors (`Problemas`). For opencode, `Cambios` lists the files written by its `write` tool, and `Problemas` lists its failed tool calls. Both come from the API of the background service.
+
+Without an open chat session, no card is created; the usual status alerts still arrive. Secrets are redacted before anything is posted.
+
+While a chat session is open, `detalle`, `ver`, `cambios` and `cancelar` are read as orders and are not sent to the agent. Any other message still goes to the agent. Without a chat session, these words are ignored.
 
 ### Bridge restart
 
@@ -113,6 +126,11 @@ They are sent from a room. Only the owner can send them.
 | `salir` | Room with an open chat session | Closes the chat session |
 | `confirmar` | Same room as the command | Runs the pending command (60 s) |
 | `descartar` | Room with pending chat messages | Deletes queued messages after a bridge restart |
+| `detalle [n]` | Room with an open chat session | Last n tool actions of the current turn (default 10, max 30) |
+| `ver` | Room with an open chat session | Full reply of the current turn, in chunks |
+| `cambios` | Room with an open chat session | Uncommitted files and diff summary of the project (`git`) |
+| `cancelar` | Room with an open chat session | Stops the current task, after confirmation: Claude Code gets Escape in its pane; opencode's turn is interrupted through the API |
+| `permitir` / `rechazar` | Room with an open chat session, when opencode asks for permission | Approves once or rejects the pending permission (only with `chat.opencode_auto` off) |
 
 Panels use the format `w1:p1`. A message of any other type, or a verb not in the list, does nothing. Any message other than `confirmar` cancels a pending command.
 
@@ -135,6 +153,8 @@ State directory (`HERDR_PLUGIN_STATE_DIR`, usually `~/.local/state/herdr/plugins
 - `audit.log`: one line per command. The text of `enviar` is not logged.
 - `bridge.log`: bridge output when Herdr started it.
 - `bridge.lock`: single-instance lock.
+
+`audit.log` and `bridge.log` rotate when they exceed 10 MB or when the day changes. The archived copies are compressed with gzip (`bridge.log.<date>.gz`).
 
 ## Known risks
 

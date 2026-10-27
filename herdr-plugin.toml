@@ -1,6 +1,6 @@
 id = "herdr-matrix"
 name = "Herdr Matrix"
-version = "0.18.2"
+version = "0.24.1"
 min_herdr_version = "0.9.5"
 description = "Publica novedades de agentes en salas Matrix cifradas y recibe órdenes desde el chat"
 platforms = ["linux", "macos"]
