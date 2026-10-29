@@ -23,7 +23,7 @@ Desde el directorio del instalable (`Herdr-Matrix-v0.16.0-macos-<arch>` tras ext
 node --version                       # debe ser 22 o superior
 node src/index.mjs                   # debe mostrar el uso y salir con código 2
 node src/index.mjs setup             # URL, usuario, contraseña, dueño y sala de control
-node src/index.mjs verify            # verificación del dispositivo (emojis o QR)
+node src/index.mjs verify            # verificación del dispositivo (por emojis)
 node src/index.mjs run               # bridge: observar la línea base y los eventos
 ```
 

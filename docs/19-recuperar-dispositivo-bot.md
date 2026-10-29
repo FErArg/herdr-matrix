@@ -1,6 +1,6 @@
 # Recuperar el dispositivo del bot (almacén criptográfico desincronizado)
 
-Síntoma: `verify` no genera QR, no llega nada a Element, y la consola muestra:
+Síntoma: `verify` no envía la solicitud, no llega nada a Element, y la consola muestra:
 
 ```
 Failed to process outgoing request 0: M_UNKNOWN: MatrixError: [400] One time key signed_curve25519:AAAAAAAAAA4 already exists.
@@ -49,7 +49,7 @@ Espera a ver la línea "solicitud enviada al dueño en la sala de control: acép
 
 4. Si la consola pide la contraseña de la cuenta del bot para crear el cross-signing, escríbela. No se guarda.
 
-5. Escanea el QR desde Element (Verificar por escaneo). Si Element no ofrece escaneo, la verificación pasa a emojis: compáralos y responde "si" en consola.
+5. Compara los emojis que muestra la consola con los de Element y confirma en ambos lados. La verificación es solo por emojis; no hay QR.
 
 6. Cuando salga "dispositivo del bot verificado", arranca el bridge de nuevo. Puedes hacerlo con `node src/index.mjs startup`, que lo lanza en segundo plano, o con `node src/index.mjs run` en una terminal.
 
@@ -71,5 +71,5 @@ Si la cuenta antigua no se puede verificar (por ejemplo, el cross-signing falla 
 
 ## Si algo falla
 
-- Si `verify` no genera QR ni llega nada a Element, mira primero si la línea "solicitud enviada" aparece en consola. Si no aparece, el proceso se queda antes de enviar la solicitud.
+- Si `verify` no llega a Element, mira primero si la línea "solicitud enviada" aparece en consola. Si no aparece, el proceso se queda antes de enviar la solicitud.
 - Si vuelve a aparecer el error de claves de un solo uso después de `setup`, revisa que no quede ningún proceso `src/index.mjs` en marcha antes de repetir los pasos.

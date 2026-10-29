@@ -2,7 +2,7 @@
 
 Herdr plugin that publishes agent updates to encrypted Matrix rooms and receives commands from the owner's chat.
 
-Status: version 0.24.1. See `CHANGELOG.md` for what is verified and what is pending, and `docs/` for the design of each phase.
+Status: version 0.25.7. See `CHANGELOG.md` for what is verified and what is pending, and `docs/` for the design of each phase.
 
 License: GNU GPL v3 (see `LICENSE`).
 
@@ -53,7 +53,9 @@ Then verify the bot's device from the owner's client:
 node src/index.mjs verify
 ```
 
-The QR code appears in the console. The owner scans it from Element (Verify by scanning). Do not run the bridge while running `verify`.
+The bridge sends a verification request to the control room. The owner accepts it in Element and compares the emojis shown in the console. If the bot has no cross-signing keys, `verify` creates them and asks for the bot's password (without echo; it is only kept in memory). Do not run the bridge while running `verify`.
+
+If the bot's device stops working (for example, `Failed to process outgoing request ... already exists` in the log), see `docs/19-recuperar-dispositivo-bot.md`.
 
 ## Usage
 
@@ -65,14 +67,15 @@ Runs the bridge until SIGINT or SIGTERM. If Herdr's subscription closes or there
 
 When Herdr starts, the manifest's `[[startup]]` runs `node src/index.mjs startup`. That command starts the bridge in the background and exits. Its output goes to `state/bridge.log`. Without a configuration, or with the bridge already running, it does nothing.
 
-Each Herdr workspace has its own encrypted room. It is created when the workspace appears, renamed when the workspace is renamed, and archived (read-only) when it closes.
+Each Herdr workspace has its own encrypted room. It is created when the workspace appears, renamed when the workspace is renamed, and archived (read-only) when it closes. Each tab of a workspace also has its own room, named `workspace-tab` (for example `herdr-matrix-rama-beta`). If the tab label has no valid characters, the tab number is used instead. Tab rooms are created one at a time, with a pause if the server rate-limits them.
 
-**Before using the chat, the project must be started.** The chat answers only through the agent of its own workspace (Claude Code or opencode). Open the agent in the workspace's pane before writing in its room. With opencode, the chat does not open without an open agent. For Claude Code, see the next section.
+**Before using the chat, the project must be started.** The chat answers only through the agent of its own workspace or tab (Claude Code or opencode). Open the agent in the pane before writing in its room. With opencode, the chat does not open without an open agent. For Claude Code, see the next section.
 
 Chat rules:
 
-- A workspace has one agent. If there is more than one, the chat does not open.
-- Messages from a room reach only the agent of its workspace. No agent from another workspace answers in that room.
+- From a workspace room, a workspace with more than one agent does not open the chat.
+- From a tab room, the chat goes to the agent of that tab, even if the workspace has several agents. A tab without an agent does not open the chat, and the bridge does not start one there.
+- Messages from a room reach only the agent of its workspace or tab. No agent from another workspace, or from another tab of the same workspace, answers in that room.
 - opencode runs in the workspace's directory, not the bridge's directory.
 - Before each message, the bridge checks that the workspace's agent is still the type the session was opened with. If it changed (for example, from Claude Code to opencode), nothing is sent: the session pauses and the room says so. Write `salir`, then open the session again with the new agent's type.
 
@@ -88,13 +91,19 @@ While the agent is working, messages keep their order. Write `salir` to close th
 
 ### Chat with opencode
 
-Write `chat opencode` in the workspace's room and confirm with `confirmar`. The bridge:
+Write `chat opencode` in the workspace's room or in a tab room and confirm with `confirmar`. The bridge:
 
-1. Looks for the workspace's agent. It must be opencode and have a project directory. If it cannot find one, it does not open the session.
+1. Looks for the workspace's agent (or the tab's agent, from a tab room). It must be opencode and have a project directory. If it cannot find one, it does not open the session.
 2. Each room message is sent through the API of the opencode background service (`opencode api`), in a session of the workspace's project directory. The first message creates the session; the next ones go to the same session.
-3. The bridge waits for the turn to finish and posts the reply to the room. With `chat.opencode_auto` (on by default), permission requests are approved once. With it off, the room shows each permission request: the owner answers `permitir` (once) or `rechazar`. An approval is never remembered (`always` is not offered from the room). If nobody answers, the turn fails after 3 min, reported in the room.
+3. The bridge waits for the turn to finish and posts the reply to the room. With `chat.opencode_auto` (on by default), permission requests are approved once. With it off, the room shows each request and the owner answers `permitir` (once) or `rechazar`; without an answer in 3 min, the turn fails and the room is told.
 
-The TUI and the chat share the same opencode session, so messages from the room appear in the TUI. If the TUI is busy with another task, the message waits or fails on timeout. A workspace with two agents does not open the chat.
+The TUI and the chat share the same opencode session, so messages from the room appear in the TUI. If the TUI is busy with another task, the message waits or fails on timeout. From a workspace room, a workspace with two agents does not open the chat.
+
+### Opening a tab
+
+From the room of a workspace or of one of its tabs, write `new-tab` to open a new tab in that workspace. The bot asks which agent to start in it: `1` opencode, `2` claude, `3` tab only, or `cancelar`. Answer within 60 s. You can also write `new-tab opencode` or `new-tab claude`, which asks for `confirmar` instead.
+
+The new tab takes its directory from an agent that is already open in the workspace. If there is none, the bridge does not create the tab and says so. The owner's message never sets the directory. At most three new tabs per workspace in ten minutes. If the agent does not start, the tab stays open and the room says so. The new tab's room appears by itself.
 
 ### Task card
 
@@ -118,23 +127,38 @@ They are sent from a room. Only the owner can send them.
 
 | Command | Where | What it does |
 |---|---|---|
-| `estado` | Control room or a workspace room | Lists the agents in scope |
-| `leer <panel>` | Control room or the room of the pane's workspace | Last 20 lines of the pane |
-| `enviar <panel> <texto>` | Only the room of the pane's workspace | Types text into the pane, after confirmation |
-| `enter <panel>` | Only the room of the pane's workspace | Presses Enter in the pane, after confirmation |
-| `chat <claude\|opencode>` | Only a workspace room | Opens a chat session with the workspace's agent, after confirmation |
+| `estado` (also `estados`, `status`, `agentes`, `lista`, `listar`) | Control room, or a workspace or tab room | Lists the agents in scope |
+| `leer <panel>` (also `lee`, `read`, `mostrar`, `salida`) | Control room, or a workspace or tab room of the pane's workspace | Last 20 lines of the pane |
+| `enviar <panel> <texto>` (also `envia`, `escribir`, `send`) | A workspace room or a tab room of the pane's workspace | Types text into the pane, after confirmation |
+| `enter <panel>` (also `intro`, `pulsar`, `return`) | A workspace room or a tab room of the pane's workspace | Presses Enter in the pane, after confirmation |
+| `new-tab [claude\|opencode]` | Room of a workspace or of one of its tabs | Opens a new tab in the workspace, optionally starting that agent in it. Without a type, the bot asks: 1 opencode, 2 claude, 3 tab only. Up to 3 per workspace every 10 minutes |
+| `chat <claude\|opencode>` | A workspace room or a tab room | Opens a chat session with the agent of the workspace (or of the tab), after confirmation |
 | `salir` | Room with an open chat session | Closes the chat session |
-| `confirmar` | Same room as the command | Runs the pending command (60 s) |
+| `confirmar` (also `confirma`, `confirmo`, `si`, `ok`) | Same room as the command | Runs the pending command (60 s) |
 | `descartar` | Room with pending chat messages | Deletes queued messages after a bridge restart |
 | `detalle [n]` | Room with an open chat session | Last n tool actions of the current turn (default 10, max 30) |
 | `ver` | Room with an open chat session | Full reply of the current turn, in chunks |
 | `cambios` | Room with an open chat session | Uncommitted files and diff summary of the project (`git`) |
-| `cancelar` | Room with an open chat session | Stops the current task, after confirmation: Claude Code gets Escape in its pane; opencode's turn is interrupted through the API |
-| `permitir` / `rechazar` | Room with an open chat session, when opencode asks for permission | Approves once or rejects the pending permission (only with `chat.opencode_auto` off) |
+| `cancelar` | Room with an open chat session | Sends Escape to the agent's pane, or interrupts the opencode turn through its API, after confirmation |
+| `permitir` / `rechazar` | Room with an open chat session and a pending opencode permission | Approves once or rejects the permission request. Approvals are never saved (`always` is not offered) |
 
-Panels use the format `w1:p1`. A message of any other type, or a verb not in the list, does nothing. Any message other than `confirmar` cancels a pending command.
+Words are case-insensitive and ignore accents. Words of 5 or more letters tolerate one letter of typo, but only for read commands (`estado`, `leer`); a typo never runs a command that changes something.
+
+Answers in the control room, when the bot asks about inviting someone after creating a workspace room: `no` closes the question; a Matrix ID (`@user:server`) that exists is invited. The question expires after 10 minutes.
+
+Panels use the format `w1:p1`. A message of any other type, or a verb not in the list, does nothing. Any message other than the expected answer cancels a pending command. For `new-tab` without a type, the expected answers are `1`, `2`, `3` or `cancelar`.
 
 While a chat session is open, everything you write in that room goes to the agent, except `salir`. If the bridge restarts with queued messages, they are not sent until you reply `confirmar` (send them) or `descartar` (discard them).
+
+## Recent improvements
+
+Summary of the features added in 0.25.x. Details and verification status are in `CHANGELOG.md`.
+
+- Tab rooms: each tab has its own room, created and archived with the tab, with rate limits against Matrix 429 errors.
+- Chat per tab: a tab room talks to its tab's agent, even when the workspace has several agents.
+- `new-tab`: opens a tab from a room, optionally starting Claude Code or opencode in it. Asks which agent when no type is given. Limited to 3 per workspace in 10 minutes.
+- Verification of the bot's device by emojis only.
+- Transcript path fix: Claude Code transcripts are found in any directory name, including macOS temporary folders.
 
 ## Files
 
@@ -142,7 +166,7 @@ Herdr starts the plugin with its own directories, and `setup`, `verify` and `run
 
 Configuration directory (`HERDR_PLUGIN_CONFIG_DIR`, usually `~/.config/herdr/plugins/config/herdr-matrix`):
 
-- `config.json`: URL, owner, control room, rooms per workspace. No secrets.
+- `config.json`: URL, owner, control room, rooms per workspace and per tab. No secrets.
 
 State directory (`HERDR_PLUGIN_STATE_DIR`, usually `~/.local/state/herdr/plugins/herdr-matrix`), all with 0600 permissions:
 
@@ -150,6 +174,9 @@ State directory (`HERDR_PLUGIN_STATE_DIR`, usually `~/.local/state/herdr/plugins
 - `crypto/store.bin` and `crypto/store.key`: cryptographic store, encrypted with the side key.
 - `herdr-snapshot.json`: latest state of the agents.
 - `chats.json`: open chat sessions, per room.
+- `cards.json`: open task cards.
+- `pending-invites.json`: pending invitation questions.
+- `herdr-snapshot.json`: last known state of the agents (used to detect changes).
 - `audit.log`: one line per command. The text of `enviar` is not logged.
 - `bridge.log`: bridge output when Herdr started it.
 - `bridge.lock`: single-instance lock.
@@ -161,7 +188,8 @@ State directory (`HERDR_PLUGIN_STATE_DIR`, usually `~/.local/state/herdr/plugins
 - **Key next to the store.** `store.key` is in the same directory as `store.bin`. Anyone who can read that directory can decrypt it.
 - **`leer` shows pane output in the room.** If a pane shows a secret, it appears in Matrix. Use `leer` only on panes that can be shown.
 - **Metadata on the server.** The server cannot read the encrypted content, but it sees who writes, when, and in which room.
-- **No live test of a complete remote command.** See `docs/13-fase3-entrada.md`.
+- **Names on the server.** Workspace and tab names are sent to the server unencrypted, because the server needs them to create the room. They reveal project and branch names.
+- **opencode approves permissions once.** With `chat.opencode_auto` on (the default), each permission request in a chat session is approved once. Approvals are never saved.
 
 ## Rotation
 
