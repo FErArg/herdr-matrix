@@ -10,6 +10,7 @@ import { createAudit } from "./audit.mjs";
 import { createCards } from "./cards.mjs";
 import { createChatManager } from "./chat.mjs";
 import { createInbound } from "./inbound.mjs";
+import { createNewTab } from "./new-tab.mjs";
 import { createInviteQueue } from "./invites.mjs";
 import { attachInbound } from "./inbound-events.mjs";
 import { createMatrixClient } from "./matrix.mjs";
@@ -17,6 +18,7 @@ import { createOutbound, SUBSCRIPTION_TYPES } from "./outbound.mjs";
 import { createRotator } from "./rotate.mjs";
 import { createRoomManager } from "./rooms.mjs";
 import { createRoomSender } from "./sender.mjs";
+import { createTabRoomManager } from "./tab-rooms.mjs";
 import { loadConfig, readJson, writeJsonSecure } from "./store.mjs";
 import { assertConfigValid } from "./config-check.mjs";
 
@@ -94,6 +96,7 @@ export async function runBridge({ dirs, log, socketPath = defaultSocketPath() })
           audit: createAudit(join(dirs.state, "audit.log")),
           invites,
           chats,
+          newTab: createNewTab({ herdr }),
           log,
         });
         detachInbound = attachInbound(client, inbound);
@@ -119,6 +122,14 @@ export async function runBridge({ dirs, log, socketPath = defaultSocketPath() })
       log,
       onCreated: (created) => invites.enqueue(created),
     });
+    // Las salas de pestaña no preguntan por invitados: el dueño ya entra en cada una al crearla.
+    const tabRooms = createTabRoomManager({
+      matrix,
+      sendText: sender.sendText,
+      config,
+      saveConfig: (data) => writeJsonSecure(configPath, data),
+      log,
+    });
     // Tarjetas de tarea. Las que quedaron abiertas antes de reiniciar se cierran como interrumpidas.
     const cardsPath = join(dirs.state, "cards.json");
     const cards = createCards({
@@ -132,6 +143,7 @@ export async function runBridge({ dirs, log, socketPath = defaultSocketPath() })
       herdr,
       sender,
       rooms,
+      tabRooms,
       chats,
       cards,
       config,

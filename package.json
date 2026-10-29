@@ -1,6 +1,6 @@
 {
   "name": "herdr-matrix",
-  "version": "0.24.1",
+  "version": "0.25.7",
   "private": true,
   "description": "Plugin de Herdr que conecta paneles de agentes con salas Matrix cifradas",
   "type": "module",

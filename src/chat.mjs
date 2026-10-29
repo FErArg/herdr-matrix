@@ -33,9 +33,10 @@ export function chunkText(text, max = CHUNK_MAX) {
 
 // Agente del workspace: el único que puede responder en su sala. Los agentes de otros workspaces se ignoran.
 // Un workspace tiene un agente; más de uno es un estado ambiguo y no se elige ninguno.
-export function agentOfWorkspace(agents, workspaceId) {
-  const own = agents.filter((agent) => agent.workspace_id === workspaceId);
-  if (own.length > 1) throw new Error("hay más de un agente en el workspace");
+// Con tabId (sala de pestaña), el ámbito es la pestaña: cada pestaña puede tener su propio agente.
+export function agentOfWorkspace(agents, workspaceId, tabId = null) {
+  const own = agents.filter((agent) => agent.workspace_id === workspaceId && (tabId === null || agent.tab_id === tabId));
+  if (own.length > 1) throw new Error(tabId ? "hay más de un agente en la pestaña" : "hay más de un agente en el workspace");
   return own[0] ?? null;
 }
 
@@ -50,6 +51,7 @@ export function createChatSession({
   sendText,
   roomId,
   workspaceId,
+  tabId = null,
   paneId,
   persist,
   log,
@@ -67,6 +69,7 @@ export function createChatSession({
   const session = {
     roomId,
     workspaceId,
+    tabId,
     paneId,
     sessionId: state.sessionId ?? null,
     cwd: state.cwd ?? null,
@@ -99,6 +102,7 @@ export function createChatSession({
   const snapshot = () => ({
     roomId: session.roomId,
     workspaceId: session.workspaceId,
+    tabId: session.tabId,
     paneId: session.paneId,
     sessionId: session.sessionId,
     cwd: session.cwd,
@@ -122,7 +126,7 @@ export function createChatSession({
     const { agents } = await herdr.request("agent.list", {});
     let agent;
     try {
-      agent = agentOfWorkspace(agents, workspaceId);
+      agent = agentOfWorkspace(agents, workspaceId, session.tabId);
     } catch (error) {
       throw new AgentChangedError(`${error.message}; la sesión queda en pausa.`);
     }
@@ -195,7 +199,7 @@ export function createChatSession({
       // directorio del panel del workspace (no en el del bridge).
       // La instrucción de formato hacía que el modelo respondiera con basura de herramientas.
       const { agents } = await herdr.request("agent.list", {});
-      const agent = agentOfWorkspace(agents, workspaceId);
+      const agent = agentOfWorkspace(agents, workspaceId, session.tabId);
       if (agent?.agent !== "opencode" || !agent.cwd) throw new Error("no hay opencode detectado en el workspace");
       session.paneId = agent.pane_id;
       session.cwd = agent.cwd;
@@ -205,13 +209,15 @@ export function createChatSession({
       return;
     }
     const { agents } = await herdr.request("agent.list", {});
-    const agent = agentOfWorkspace(agents, workspaceId);
+    const agent = agentOfWorkspace(agents, workspaceId, session.tabId);
     if (agent) {
       // Un agente de otro tipo en el panel haría que la respuesta se busque en una transcripción que no existe.
       if (agent.agent !== kind) throw new Error(`el agente del workspace es ${agent.agent}, no ${kind}`);
       // Un agente ocupado no tumba la sesión: el formato va en la cola y se envía cuando esté libre.
       session.paneId = agent.pane_id;
     } else {
+      // En una pestaña no se arranca agente: el panel principal del workspace puede ser de otra pestaña.
+      if (session.tabId) throw new Error("no hay agente en esta pestaña");
       // Sin agente en el workspace: se arranca uno en su panel principal y se espera a que esté listo.
       session.paneId = `${workspaceId}:p1`;
       await herdr.request("agent.start", { name: `chat-${workspaceId}`, kind, pane_id: session.paneId, timeout_ms: 60_000 });
@@ -346,6 +352,7 @@ export function createChatManager({ herdr, sendText, persistAll, restore = [], l
         herdr, sendText, log, now, opencodeAuto,
         roomId: state.roomId,
         workspaceId: state.workspaceId,
+        tabId: state.tabId ?? null,
         paneId: state.paneId,
         state,
         persist: () => persistAll(all()),
@@ -364,10 +371,10 @@ export function createChatManager({ herdr, sendText, persistAll, restore = [], l
     has(roomId) {
       return sessions.has(roomId);
     },
-    create({ roomId, workspaceId, paneId }) {
+    create({ roomId, workspaceId, tabId = null, paneId }) {
       const session = createChatSession({
         herdr, sendText, log, now, opencodeAuto,
-        roomId, workspaceId, paneId,
+        roomId, workspaceId, tabId, paneId,
         persist: () => persistAll(all()),
       });
       sessions.set(roomId, session);
@@ -378,8 +385,11 @@ export function createChatManager({ herdr, sendText, persistAll, restore = [], l
       await persistAll(all());
     },
     // Sesión abierta en ese workspace, o null. Nunca se devuelve la de otro workspace.
-    findByWorkspace(workspaceId) {
-      return [...sessions.values()].find((item) => item.workspaceId === workspaceId) ?? null;
+    // Con tabId, se prefiere la de esa pestaña; una sesión de workspace (sin pestaña) también sirve.
+    findByWorkspace(workspaceId, tabId = undefined) {
+      const inWorkspace = [...sessions.values()].filter((item) => item.workspaceId === workspaceId);
+      if (tabId === undefined) return inWorkspace[0] ?? null;
+      return inWorkspace.find((item) => item.tabId === tabId) ?? inWorkspace.find((item) => !item.tabId) ?? null;
     },
     all,
     pending() {

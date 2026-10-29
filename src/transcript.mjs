@@ -9,10 +9,11 @@ import { join } from "node:path";
 // Un ID de sesión que llega de fuera se usa en un nombre de fichero: solo caracteres seguros.
 const SESSION_ID = /^[A-Za-z0-9_-]{1,128}$/;
 
-// Claude Code guarda las transcripciones en ~/.claude/projects/<cwd con / y . cambiados por ->.
+// Claude Code guarda las transcripciones en ~/.claude/projects/<cwd con cada carácter que no sea letra o dígito cambiado por ->.
+// Así "/private/var/folders/hx/784_4k/T/x.y" es "-private-var-folders-hx-784-4k-T-x-y".
 export function transcriptPath(cwd, sessionId, home = homedir()) {
   if (!SESSION_ID.test(String(sessionId ?? ""))) throw new Error("id de sesión no válido");
-  const folder = cwd.replace(/[/.]/g, "-");
+  const folder = cwd.replace(/[^A-Za-z0-9]/g, "-");
   return join(home, ".claude", "projects", folder, `${sessionId}.jsonl`);
 }
 

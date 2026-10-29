@@ -8,7 +8,11 @@ export const COMMANDS = {
   leer: { method: "pane.read", write: false, args: ["pane"] },
   enviar: { method: "pane.send_text", write: true, confirm: true, args: ["pane", "text"] },
   enter: { method: "pane.send_keys", write: true, confirm: true, args: ["pane"], keys: ["enter"] },
+  "new-tab": { method: "tab.create", write: true, confirm: true, args: ["kind"] },
 };
+
+// Tipos de agente que new-tab puede arrancar en la pestaña nueva.
+export const NEW_TAB_KINDS = ["claude", "opencode"];
 
 // Palabras que el dueño puede usar para cada verbo. Sin tildes y en minúsculas.
 export const SYNONYMS = {
@@ -106,6 +110,14 @@ export function parseCommand(body) {
   const verb = verbFor(tokens[0]);
   if (!verb) return { error: "orden no reconocida", word: tokens[0] };
   const spec = COMMANDS[verb];
+
+  if (spec.args.includes("kind")) {
+    if (tokens.length > 2) return { error: `${verb} admite como máximo un tipo de agente` };
+    if (!tokens[1]) return { verb, args: {} };
+    const kind = tokens[1].toLowerCase();
+    if (!NEW_TAB_KINDS.includes(kind)) return { error: "tipo de agente no válido (claude u opencode)" };
+    return { verb, args: { kind } };
+  }
 
   if (!spec.args.includes("pane")) {
     if (tokens.length > 1) return { error: `${verb} no admite argumentos` };

@@ -1,13 +1,12 @@
 // Verificación del dispositivo del bot desde el cliente del dueño, con el QR en la consola.
-// El bot pide la verificación en la sala de control; el dueño la acepta en Element y escanea el QR
-// que muestra la consola (Verificar por escaneo). Si el bot no tiene cross-signing, lo crea:
+// El bot pide la verificación en la sala de control; el dueño la acepta en Element y compara los emojis
+// que muestra la consola. Si el bot no tiene cross-signing, lo crea:
 // pide la contraseña de su cuenta sin eco y la usa solo en memoria. No se guarda.
 // Requiere que el bridge no esté en marcha: ambos usan el mismo almacén criptográfico.
 
 import { join } from "node:path";
 import { startBotClient } from "./bot-client.mjs";
 import { acquireLock } from "./lock.mjs";
-import { renderQr } from "./qr.mjs";
 import { loadConfig, readJson } from "./store.mjs";
 import { VerificationPhase, VerificationRequestEvent, VerifierEvent } from "matrix-js-sdk/lib/crypto-api/verification.js";
 
@@ -113,18 +112,9 @@ export async function runVerify({ io, dirs }) {
     io.log("solicitud enviada al dueño en la sala de control: acéptala en Element");
     await waitForPhase(request, VerificationPhase.Ready, "la solicitud no se aceptó a tiempo");
 
-    // QR si el cliente del dueño puede escanear; si no, emojis (no necesitan cámara).
-    if (request.otherPartySupportsMethod("m.qr_code.scan.v1")) {
-      const code = await request.generateQRCode();
-      if (!code) {
-        throw new Error("no se pudo generar el QR: el dispositivo no tiene cross-signing disponible");
-      }
-      io.log(renderQr(code));
-      io.log("escanea el QR desde Element: Verificar por escaneo");
-      await waitForPhase(request, VerificationPhase.Done, "el QR no se escaneó a tiempo");
-    } else {
-      await verifyWithEmoji({ request, io });
-    }
+    // Siempre por emojis (SAS): no necesitan cámara. El QR se queda sin usar porque el cliente del dueño
+    // lo anuncia aunque no pueda escanear, y entonces la verificación se queda esperando.
+    await verifyWithEmoji({ request, io });
     io.log("dispositivo del bot verificado");
   } finally {
     if (bot) await bot.stop();

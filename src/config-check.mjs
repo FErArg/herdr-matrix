@@ -45,6 +45,23 @@ export function configProblems(config) {
     });
   }
 
+  if (config.tab_rooms !== undefined) {
+    if (!Array.isArray(config.tab_rooms)) {
+      problems.push("tab_rooms debe ser una lista");
+    } else {
+      config.tab_rooms.forEach((room, index) => {
+        if (!room || typeof room !== "object") {
+          problems.push(`tab_rooms[${index}] no es un objeto`);
+          return;
+        }
+        if (!WORKSPACE_ID.test(room.workspace_id ?? "")) problems.push(`tab_rooms[${index}].workspace_id no es válido`);
+        if (typeof room.tab_id !== "string" || !room.tab_id) problems.push(`tab_rooms[${index}].tab_id no es válido`);
+        if (typeof room.room_id !== "string" || !ROOM_ID.test(room.room_id)) problems.push(`tab_rooms[${index}].room_id no es válido`);
+        if (!ROOM_STATUS.includes(room.status)) problems.push(`tab_rooms[${index}].status debe ser active o archived`);
+      });
+    }
+  }
+
   if (config.chat !== undefined) {
     if (!config.chat || typeof config.chat !== "object") {
       problems.push("chat debe ser un objeto");

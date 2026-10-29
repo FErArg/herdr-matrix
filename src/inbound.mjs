@@ -11,6 +11,7 @@
 import { COMMANDS, foldWord, isConfirmation, normalizeBody, paneWorkspace, parseCommand } from "./commands.mjs";
 import { AGENT_KINDS } from "./chat.mjs";
 import { CANCEL_KEY, consultaOf, formatCambios, formatDetalle, formatVer, gitState } from "./consultas.mjs";
+import { choiceOf } from "./new-tab.mjs";
 
 // En la auditoría de órdenes no reconocidas solo va la primera palabra: nunca el resto del mensaje.
 const WORD_AUDIT_MAX = 20;
@@ -47,6 +48,7 @@ export function createInbound({
   log,
   invites = null,
   chats = null,
+  newTab = null,
   now = () => Date.now(),
 }) {
   const pending = new Map(); // remitente → { verb, args, roomId, expiresAt }
@@ -61,8 +63,12 @@ export function createInbound({
 
   function scopeOf(roomId) {
     if (roomId === config.control_room_id) return { control: true };
-    const room = (config.rooms ?? []).find((item) => item.room_id === roomId && item.status === "active");
-    return room ? { control: false, workspaceId: room.workspace_id } : null;
+    // Una sala de pestaña da el mismo alcance que la de su workspace para las órdenes, pero el chat va
+    // al agente de su pestaña (tabId). Una sala de workspace no tiene tabId.
+    const room = [...(config.rooms ?? []), ...(config.tab_rooms ?? [])].find(
+      (item) => item.room_id === roomId && item.status === "active",
+    );
+    return room ? { control: false, workspaceId: room.workspace_id, tabId: room.tab_id ?? null } : null;
   }
 
   function withinRateLimit(from) {
@@ -97,7 +103,7 @@ export function createInbound({
   // Abre la sesión de chat sin bloquear la cola de órdenes: la respuesta llega cuando el agente está listo.
   function startChat(roomId, kind = "claude") {
     const scope = scopeOf(roomId);
-    const session = chats.create({ roomId, workspaceId: scope.workspaceId, paneId: `${scope.workspaceId}:p1` });
+    const session = chats.create({ roomId, workspaceId: scope.workspaceId, tabId: scope.tabId, paneId: `${scope.workspaceId}:p1` });
     session
       .open(kind)
       .then(() => reply(roomId, `sesión de chat abierta con ${kind} en ${labelOf(scope.workspaceId)}. Escribe salir para cerrarla.`))
@@ -111,6 +117,10 @@ export function createInbound({
 
   async function execute(roomId, verb, args) {
     if (verb === "chat") return startChat(roomId, args.kind);
+    if (verb === "new-tab") {
+      if (!newTab) throw new Error("apertura de pestañas no disponible");
+      return newTab.run({ workspaceId: scopeOf(roomId).workspaceId, kind: args.kind ?? null });
+    }
     if (verb === "estado") {
       const { agents } = await herdr.request("agent.list", {});
       const scope = scopeOf(roomId);
@@ -200,9 +210,20 @@ export function createInbound({
       return;
     }
 
+    // new-tab sin tipo: el dueño elige el agente en la respuesta (1, 2, 3 o cancelar).
+    if (verb === "new-tab" && !args.kind) {
+      pending.set(from, { verb, args, roomId, expiresAt: now() + CONFIRM_TIMEOUT_MS, choosing: true });
+      await reply(roomId, "¿qué abro en la pestaña nueva? 1 opencode, 2 claude, 3 solo pestaña. Responde en 60 s; cancelar o cualquier otro mensaje la cancela.");
+      await record({ sender: from, room: roomId, verb, pane, result: "pendiente de elección" });
+      return;
+    }
+
     if (COMMANDS[verb].write) {
       pending.set(from, { verb, args, roomId, expiresAt: now() + CONFIRM_TIMEOUT_MS });
-      await reply(roomId, `¿confirmas la orden ${verb} en ${labelOf(paneWorkspace(pane))} (${pane})? Responde confirmar en 60 s. Cualquier otro mensaje la cancela.`);
+      const question = verb === "new-tab"
+        ? `¿abrir una pestaña nueva en ${labelOf(scope.workspaceId)}${args.kind ? ` con ${args.kind}` : ""}?`
+        : `¿confirmas la orden ${verb} en ${labelOf(paneWorkspace(pane))} (${pane})?`;
+      await reply(roomId, `${question} Responde confirmar en 60 s. Cualquier otro mensaje la cancela.`);
       await record({ sender: from, room: roomId, verb, pane, result: "pendiente de confirmación" });
       return;
     }
@@ -228,11 +249,42 @@ export function createInbound({
     try {
       const text = await execute(roomId, action.verb, action.args);
       await reply(roomId, text);
-      await record({ sender: from, room: roomId, verb: action.verb, pane: action.args.pane, result: "ok (confirmada)" });
+      await record({ sender: from, room: roomId, verb: action.verb, pane: action.args.pane ?? "-", result: "ok (confirmada)" });
     } catch (error) {
       await reply(roomId, "no se pudo ejecutar la orden.");
-      await record({ sender: from, room: roomId, verb: action.verb, pane: action.args.pane, result: `error: ${error.message}` });
+      await record({ sender: from, room: roomId, verb: action.verb, pane: action.args.pane ?? "-", result: `error: ${error.message}` });
     }
+  }
+
+  // Respuesta a la elección de new-tab. true si la respuesta se ha tratado; false si no es una elección.
+  async function handleChoice({ roomId, sender: from, body }) {
+    const action = pending.get(from);
+    if (!action?.choosing || action.roomId !== roomId) return false;
+    if (now() > action.expiresAt) {
+      pending.delete(from);
+      return false;
+    }
+    const choice = choiceOf(body);
+    if (choice === null) return false;
+    if (choice === "hint") {
+      await reply(roomId, "elige 1 opencode, 2 claude o 3 solo pestaña.");
+      return true;
+    }
+    pending.delete(from);
+    if (choice === "cancel") {
+      await reply(roomId, "pestaña cancelada.");
+      await record({ sender: from, room: roomId, verb: "new-tab", pane: "-", result: "cancelada por el dueño" });
+      return true;
+    }
+    try {
+      const text = await execute(roomId, "new-tab", { kind: choice.kind });
+      await reply(roomId, text);
+      await record({ sender: from, room: roomId, verb: "new-tab", pane: "-", result: `ok (elegida: ${choice.kind ?? "sin agente"})` });
+    } catch (error) {
+      await reply(roomId, "no se pudo ejecutar la orden.");
+      await record({ sender: from, room: roomId, verb: "new-tab", pane: "-", result: `error: ${error.message}` });
+    }
+    return true;
   }
 
   async function processEvent({ roomId, sender: from, body, ts }) {
@@ -256,6 +308,8 @@ export function createInbound({
         return;
       }
     }
+
+    if (!scope.control && (await handleChoice({ roomId, sender: from, body }))) return;
 
     const query = consultaOf(body);
     // Con sesión abierta, la confirmación de una consulta pendiente (cancelar) y las consultas van antes que el agente.

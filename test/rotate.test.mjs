@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gunzipSync } from "node:zlib";
@@ -16,6 +16,9 @@ async function withDir(run) {
 }
 
 const at = (iso) => () => new Date(iso);
+
+// La fecha de modificación cuenta como día del último registro: se alinea con el reloj de la prueba.
+const touchAt = (path, iso) => utimes(path, new Date(iso), new Date(iso));
 
 test("rename: al superar el tamaño, archiva comprimido y deja el fichero vacío de nuevo", () => withDir(async (dir) => {
   const path = join(dir, "audit.log");
@@ -41,6 +44,7 @@ test("copy: copia el contenido, trunca el original y conserva el descriptor abie
 test("no rota un fichero pequeño del mismo día", () => withDir(async (dir) => {
   const path = join(dir, "audit.log");
   await writeFile(path, "pequeño");
+  await touchAt(path, "2026-10-27T09:00:00");
   const rotator = createRotator({ path, maxBytes: 1024, now: at("2026-10-27T10:00:00") });
   assert.equal(await rotator.check(), false);
   assert.equal(await readFile(path, "utf8"), "pequeño");
@@ -49,6 +53,7 @@ test("no rota un fichero pequeño del mismo día", () => withDir(async (dir) => 
 test("rota una vez al cambiar el día, aunque no llegue al tamaño máximo", () => withDir(async (dir) => {
   const path = join(dir, "audit.log");
   await writeFile(path, "hoy");
+  await touchAt(path, "2026-10-27T09:00:00");
   let current = new Date("2026-10-27T23:59:00");
   const rotator = createRotator({ path, maxBytes: 1024, now: () => current });
   assert.equal(await rotator.check(), false);

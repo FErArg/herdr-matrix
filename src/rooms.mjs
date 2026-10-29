@@ -9,6 +9,15 @@ export const ROOM_STATE_TYPE = "dev.herdr.workspace";
 export const ARCHIVED_NOTICE = "Workspace cerrado en Herdr. Sala archivada: ya no admite mensajes.";
 const READ_ONLY_EVENTS_DEFAULT = 100;
 
+// Primero se pasa a solo lectura y después se avisa: el aviso es el último mensaje que la sala admite.
+// Lo usan las salas de workspace (aquí) y las de pestaña (src/tab-rooms.mjs).
+export async function archiveRoom({ matrix, sendText }, roomId) {
+  const levels = await matrix.getState(roomId, "m.room.power_levels");
+  if (!levels) throw new Error("la sala no tiene m.room.power_levels");
+  await matrix.putState(roomId, "m.room.power_levels", { ...levels, events_default: READ_ONLY_EVENTS_DEFAULT });
+  await sendText(roomId, ARCHIVED_NOTICE);
+}
+
 // onCreated({ label, roomId }): se llama tras crear una sala (p. ej., para preguntar por invitados).
 // Un fallo en onCreated no revierte la sala creada.
 export function createRoomManager({ matrix, sendText, config, saveConfig, log, onCreated = null }) {
@@ -42,12 +51,8 @@ export function createRoomManager({ matrix, sendText, config, saveConfig, log, o
     log(`sala renombrada a ${label}`);
   }
 
-  // Primero se pasa a solo lectura y después se avisa: el aviso es el último mensaje que la sala admite.
   async function archive(entry) {
-    const levels = await matrix.getState(entry.room_id, "m.room.power_levels");
-    if (!levels) throw new Error("la sala no tiene m.room.power_levels");
-    await matrix.putState(entry.room_id, "m.room.power_levels", { ...levels, events_default: READ_ONLY_EVENTS_DEFAULT });
-    await sendText(entry.room_id, ARCHIVED_NOTICE);
+    await archiveRoom({ matrix, sendText }, entry.room_id);
     entry.status = "archived";
     entry.archived_at = new Date().toISOString();
     await saveConfig(config);

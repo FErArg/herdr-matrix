@@ -28,10 +28,14 @@ test("replyAfter devuelve null si el mensaje no está en la transcripción", () 
   assert.equal(replyAfter(jsonl(userText("otro"), assistantText("x")), "no está"), null);
 });
 
-test("transcriptPath cambia / y . del directorio de trabajo por guiones", () => {
+test("transcriptPath cambia cada carácter que no sea letra o dígito del directorio de trabajo por guiones", () => {
   assert.equal(
     transcriptPath("/home/owner/Git/projects/herdr-matrix", "abc", "/home/owner"),
     "/home/owner/.claude/projects/-home-owner-Git-projects-herdr-matrix/abc.jsonl",
+  );
+  assert.equal(
+    transcriptPath("/var/folders/ab/123_4c/T/hm-agente.Xyz", "abc", "/h"),
+    "/h/.claude/projects/-var-folders-ab-123-4c-T-hm-agente-Xyz/abc.jsonl",
   );
 });
 

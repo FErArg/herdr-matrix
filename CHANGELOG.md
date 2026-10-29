@@ -2,6 +2,75 @@
 
 Formato: versión y fecha. Versionado semántico.
 
+## 0.25.7 — 2026-10-29
+
+### Añadido
+
+- Orden `new-tab [claude|opencode]` desde la sala de un workspace o de una de sus pestañas. Abre una pestaña nueva en ese workspace y, si se pide, arranca el agente en ella. Pide `confirmar`. Sin tipo, el bot pregunta: 1 opencode, 2 claude, 3 solo pestaña. El directorio sale de un agente ya abierto en el workspace; el mensaje nunca aporta una ruta. Máximo 3 pestañas nuevas por workspace en 10 minutos (`src/new-tab.mjs`).
+
+### Corregido
+
+- El nombre del agente que se arranca en una pestaña nueva se convierte a minúsculas y guiones para cumplir las reglas de Herdr (`agentNameOf`). Sin ese cambio, la pestaña se creaba pero el agente no arrancaba.
+
+## 0.25.6 — 2026-10-29
+
+### Corregido
+
+- Dos pruebas de rotación dependían de la fecha del equipo. La fecha de modificación del fichero de prueba se alinea ahora con el reloj de la prueba. El código de rotación no cambia.
+
+## 0.25.5 — 2026-10-29
+
+### Documentación
+
+- `docs/19-recuperar-dispositivo-bot.md`: sección para cambiar a una cuenta nueva del bot. Hay que quitar `control_room_id`, `rooms` y `tab_rooms` de `config.json` antes de `setup`.
+
+## 0.25.4 — 2026-10-29
+
+### Cambiado
+
+- Chat por pestaña. Una sala de pestaña abre el chat con el agente de su pestaña (`tabId`), aunque el workspace tenga varios agentes. Si la pestaña no tiene agente, no se abre sesión ni se arranca uno en el panel principal; la sala lo indica. La sala de workspace mantiene la regla: con más de un agente en el workspace, no abre el chat (`src/chat.mjs`, `src/inbound.mjs`).
+- Las tarjetas y el turno de un agente usan la sesión de la pestaña de su panel (`src/outbound.mjs`).
+
+## 0.25.3 — 2026-10-29
+
+### Cambiado
+
+- `verify` usa siempre comparación de emojis (SAS). Ya no ofrece QR: el cliente del dueño anuncia `m.qr_code.scan.v1` aunque no pueda escanear y la verificación se quedaba esperando.
+
+### Corregido
+
+- Las rutas de transcripción de Claude Code cambian cualquier carácter que no sea letra o dígito por guion, no solo `/` y `.`. Con directorios temporales de macOS el bridge no encontraba la respuesta del agente (`src/transcript.mjs`).
+
+## 0.25.2 — 2026-10-29
+
+### Cambiado
+
+- Las salas de pestaña se crean de una en una, con una espera de 1 s entre acciones (`ACTION_SPACING_MS`).
+- Ante un 429 de Synapse, la sincronización de salas de pestaña se pausa 60 s (`RATE_LIMIT_PAUSE_MS`).
+
+## 0.25.1 — 2026-10-29
+
+### Cambiado
+
+- `docs/19-recuperar-dispositivo-bot.md` corregido: `setup` revoca la sesión anterior y borra el almacén, así que `setup --logout` no hace falta antes; la sala de control se conserva si ya existe; reiniciar el bridge no arregla el error de claves de un solo uso.
+
+## 0.25.0 — 2026-10-29
+
+### Añadido
+
+- Salas por pestaña de Herdr (`src/tab-rooms.mjs`). Cada pestaña activa tiene su sala cifrada y privada, con nombre "workspace-pestaña" en minúsculas. Si la etiqueta no tiene caracteres válidos, el nombre usa el número de la pestaña. Se invita al dueño al crearla, se renombra si cambia la pestaña o el workspace, y se archiva al cerrarse. Las salas se guardan en `tab_rooms` de `config.json`.
+- Las notificaciones de un panel van a la sala de su pestaña; sin sala de pestaña, a la del workspace.
+- El bridge se suscribe a `tab.created`, `tab.closed` y `tab.renamed`, y lee las pestañas con `tab.list`.
+- Validación de `tab_rooms` en `src/config-check.mjs`.
+- `docs/19-recuperar-dispositivo-bot.md`: procedimiento para recuperar el dispositivo del bot cuando su almacén criptográfico está desincronizado con el servidor.
+
+### Cambiado
+
+- La sala del workspace ya no recibe avisos de los paneles que tienen sala de pestaña.
+- Las pestañas que ya existen al primer arranque reciben sala.
+- Las salas de pestaña no preguntan por invitados adicionales: el dueño entra en cada una al crearla.
+- El archivado de salas se comparte entre salas de workspace y de pestaña (`archiveRoom` en `src/rooms.mjs`).
+
 ## 0.24.1 — 2026-10-27
 
 ### Cambiado
